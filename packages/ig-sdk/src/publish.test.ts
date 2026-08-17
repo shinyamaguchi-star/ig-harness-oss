@@ -49,6 +49,19 @@ describe('InstagramClient content publishing', () => {
     expect(parsed.searchParams.get('video_url')).toBe('https://example.com/v.mp4');
   });
 
+  it('createMediaContainer: reel includes cover_url and thumb_offset', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 'container-reel' }));
+    await client.createMediaContainer({
+      videoUrl: 'https://example.com/reel.mp4',
+      mediaType: 'REELS',
+      coverUrl: 'https://example.com/cover.jpg',
+      thumbOffsetMs: 2400,
+    });
+    const parsed = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(parsed.searchParams.get('cover_url')).toBe('https://example.com/cover.jpg');
+    expect(parsed.searchParams.get('thumb_offset')).toBe('2400');
+  });
+
   it('createMediaContainer: carousel parent sets children csv + media_type=CAROUSEL', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ id: 'parent-1' }));
     await client.createMediaContainer({

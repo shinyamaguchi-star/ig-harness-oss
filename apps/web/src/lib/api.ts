@@ -502,6 +502,8 @@ export interface MediaPostApi {
   postType: MediaPostType
   media: MediaPostMediaItem[]
   caption: string | null
+  coverUrl: string | null
+  thumbOffsetMs: number | null
   status: MediaPostStatus
   scheduledAt: string
   creationId: string | null
@@ -525,6 +527,8 @@ export const mediaPostsApi = {
     postType: MediaPostType
     media: MediaPostMediaItem[]
     caption?: string
+    coverUrl?: string
+    thumbOffsetMs?: number
     scheduledAt?: string
   }): Promise<MediaPostApi> => {
     const res = await fetchApi<ApiResponse<MediaPostApi>>('/api/media-posts', {
@@ -533,6 +537,8 @@ export const mediaPostsApi = {
         post_type: input.postType,
         media: input.media,
         caption: input.caption,
+        cover_url: input.coverUrl,
+        thumb_offset_ms: input.coverUrl ? undefined : input.thumbOffsetMs,
         scheduled_at: input.scheduledAt,
       }),
     })

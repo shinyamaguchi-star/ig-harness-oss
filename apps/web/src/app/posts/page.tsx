@@ -55,12 +55,17 @@ export default function PostsPage() {
   // form state
   const [postType, setPostType] = useState<MediaPostType>('feed_image')
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const coverInputRef = useRef<HTMLInputElement>(null)
   const [mediaItems, setMediaItems] = useState<MediaPostMediaItem[]>([])
+  const [reelCoverMode, setReelCoverMode] = useState<'default' | 'image' | 'frame'>('default')
+  const [coverUrl, setCoverUrl] = useState('')
+  const [thumbOffsetSeconds, setThumbOffsetSeconds] = useState('0')
   const [caption, setCaption] = useState('')
   const [mode, setMode] = useState<'now' | 'schedule'>('now')
   const [scheduledAt, setScheduledAt] = useState('')
   const [configureCampaign, setConfigureCampaign] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [coverUploading, setCoverUploading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
 
@@ -112,6 +117,40 @@ export default function PostsPage() {
     }
   }
 
+  const handleCoverFile = async (file: File | null) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      setFormError('表紙には画像ファイルを選択してください')
+      return
+    }
+    setCoverUploading(true)
+    setFormError('')
+    try {
+      const { url } = await mediaPostsApi.uploadMedia(file)
+      setCoverUrl(url)
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : '表紙画像のアップロードに失敗しました')
+    } finally {
+      setCoverUploading(false)
+    }
+  }
+
+  const moveMediaItem = (from: number, to: number) => {
+    setMediaItems((prev) => {
+      if (to < 0 || to >= prev.length) return prev
+      const next = [...prev]
+      const [item] = next.splice(from, 1)
+      next.splice(to, 0, item)
+      return next
+    })
+  }
+
+  const resetReelCover = () => {
+    setReelCoverMode('default')
+    setCoverUrl('')
+    setThumbOffsetSeconds('0')
+  }
+
   const submit = async () => {
     setFormError('')
     if (mediaItems.length === 0) {
@@ -122,12 +161,28 @@ export default function PostsPage() {
       setFormError('予約日時を指定してください')
       return
     }
+    if (postType === 'reel' && reelCoverMode === 'image' && !coverUrl) {
+      setFormError('表紙画像をアップロードしてください')
+      return
+    }
+    const thumbOffsetMs = Math.round(Number(thumbOffsetSeconds) * 1000)
+    if (
+      postType === 'reel' &&
+      reelCoverMode === 'frame' &&
+      (!Number.isFinite(thumbOffsetMs) || thumbOffsetMs < 0)
+    ) {
+      setFormError('表紙にする動画の位置を0秒以上で入力してください')
+      return
+    }
     setSubmitting(true)
     try {
       const post = await mediaPostsApi.create({
         postType,
         media: mediaItems,
         caption: caption || undefined,
+        coverUrl: postType === 'reel' && reelCoverMode === 'image' ? coverUrl : undefined,
+        thumbOffsetMs:
+          postType === 'reel' && reelCoverMode === 'frame' ? thumbOffsetMs : undefined,
         scheduledAt: mode === 'schedule' ? new Date(scheduledAt).toISOString() : undefined,
       })
       if (mode === 'schedule' && configureCampaign) {
@@ -139,6 +194,7 @@ export default function PostsPage() {
       setScheduledAt('')
       setMode('now')
       setConfigureCampaign(false)
+      resetReelCover()
       await load()
     } catch (err) {
       setFormError(err instanceof Error ? err.message : '投稿の作成に失敗しました')
@@ -193,6 +249,7 @@ export default function PostsPage() {
                 onClick={() => {
                   setPostType(t)
                   setMediaItems([])
+                  resetReelCover()
                   if (t === 'story') setConfigureCampaign(false)
                 }}
                 style={{
@@ -256,7 +313,15 @@ export default function PostsPage() {
           {mediaItems.length > 0 && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '12px 0' }}>
               {mediaItems.map((item, i) => (
-                <div key={i} style={{ position: 'relative' }}>
+                <div
+                  key={`${item.url}-${i}`}
+                  style={{
+                    position: 'relative',
+                    padding: postType === 'carousel' ? 3 : 0,
+                    border: postType === 'carousel' && i === 0 ? '2px solid #E1306C' : '2px solid transparent',
+                    borderRadius: 10,
+                  }}
+                >
                   {item.type === 'image' ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={item.url} alt="" style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 8 }} />
@@ -264,14 +329,138 @@ export default function PostsPage() {
                     <video src={item.url} style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 8 }} />
                   )}
                   <button
+                    type="button"
                     onClick={() => setMediaItems((prev) => prev.filter((_, j) => j !== i))}
                     style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: 10, border: 'none', background: '#111827', color: 'white', fontSize: 11, cursor: 'pointer' }}
                     aria-label="削除"
                   >
                     ×
                   </button>
+                  {postType === 'carousel' && i === 0 && (
+                    <span style={{ position: 'absolute', left: 7, top: 7, padding: '2px 7px', borderRadius: 10, background: '#E1306C', color: 'white', fontSize: 10, fontWeight: 700 }}>
+                      表紙
+                    </span>
+                  )}
+                  {postType === 'carousel' && (
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: 4, marginTop: 4 }}>
+                      <button
+                        type="button"
+                        onClick={() => moveMediaItem(i, i - 1)}
+                        disabled={i === 0}
+                        aria-label="左へ移動"
+                        style={{ width: 28, height: 24, border: '1px solid #D1D5DB', borderRadius: 6, background: 'white', color: '#374151', cursor: i === 0 ? 'default' : 'pointer', opacity: i === 0 ? 0.35 : 1 }}
+                      >
+                        ←
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => moveMediaItem(i, i + 1)}
+                        disabled={i === mediaItems.length - 1}
+                        aria-label="右へ移動"
+                        style={{ width: 28, height: 24, border: '1px solid #D1D5DB', borderRadius: 6, background: 'white', color: '#374151', cursor: i === mediaItems.length - 1 ? 'default' : 'pointer', opacity: i === mediaItems.length - 1 ? 0.35 : 1 }}
+                      >
+                        →
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
+            </div>
+          )}
+
+          {postType === 'carousel' && mediaItems.length > 0 && (
+            <p style={{ fontSize: 12, color: '#6B7280', margin: '0 0 12px' }}>
+              一番左のメディアが投稿の表紙になります。矢印で順番を変更できます。
+            </p>
+          )}
+
+          {postType === 'reel' && (
+            <div style={{ marginTop: 16, padding: 14, border: '1px solid #E5E7EB', borderRadius: 10, background: '#FAFAFA' }}>
+              <p style={{ margin: '0 0 10px', fontSize: 14, fontWeight: 600, color: '#374151' }}>リールの表紙</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                <label style={{ fontSize: 13, color: '#374151', cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="reel-cover-mode"
+                    checked={reelCoverMode === 'default'}
+                    onChange={() => setReelCoverMode('default')}
+                  />{' '}
+                  自動（動画の先頭フレーム）
+                </label>
+                <label style={{ fontSize: 13, color: '#374151', cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="reel-cover-mode"
+                    checked={reelCoverMode === 'image'}
+                    onChange={() => setReelCoverMode('image')}
+                  />{' '}
+                  表紙画像をアップロード
+                </label>
+                {reelCoverMode === 'image' && (
+                  <div style={{ marginLeft: 22 }}>
+                    <input
+                      ref={coverInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png"
+                      onChange={(e) => {
+                        void handleCoverFile(e.target.files?.[0] ?? null)
+                        e.target.value = ''
+                      }}
+                      disabled={coverUploading}
+                      style={{ display: 'none' }}
+                    />
+                    {coverUrl ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={coverUrl} alt="選択したリール表紙" style={{ width: 72, height: 96, objectFit: 'cover', borderRadius: 8 }} />
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button type="button" onClick={() => coverInputRef.current?.click()} style={{ padding: '6px 10px', border: '1px solid #D1D5DB', borderRadius: 7, background: 'white', color: '#374151', fontSize: 12, cursor: 'pointer' }}>
+                            変更
+                          </button>
+                          <button type="button" onClick={() => setCoverUrl('')} style={{ padding: '6px 10px', border: '1px solid #D1D5DB', borderRadius: 7, background: 'white', color: '#6B7280', fontSize: 12, cursor: 'pointer' }}>
+                            削除
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => coverInputRef.current?.click()}
+                        disabled={coverUploading}
+                        style={{ padding: '8px 12px', border: '1px solid #D1D5DB', borderRadius: 8, background: 'white', color: '#374151', fontSize: 12, cursor: coverUploading ? 'default' : 'pointer' }}
+                      >
+                        {coverUploading ? 'アップロード中…' : '画像を選択（JPG / PNG）'}
+                      </button>
+                    )}
+                  </div>
+                )}
+                <label style={{ fontSize: 13, color: '#374151', cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="reel-cover-mode"
+                    checked={reelCoverMode === 'frame'}
+                    onChange={() => setReelCoverMode('frame')}
+                  />{' '}
+                  動画内の位置を指定
+                </label>
+                {reelCoverMode === 'frame' && (
+                  <label style={{ marginLeft: 22, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#6B7280' }}>
+                    動画の先頭から
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={thumbOffsetSeconds}
+                      onChange={(e) => setThumbOffsetSeconds(e.target.value)}
+                      style={{ width: 90, border: '1px solid #D1D5DB', borderRadius: 7, padding: '6px 8px', fontSize: 13 }}
+                    />
+                    秒
+                  </label>
+                )}
+              </div>
+              <p style={{ margin: '10px 0 0', fontSize: 11, lineHeight: 1.6, color: '#9CA3AF' }}>
+                Instagram側の表示場所や縦横比により、表紙の一部が切り取られて見える場合があります。
+              </p>
             </div>
           )}
 
@@ -350,7 +539,7 @@ export default function PostsPage() {
 
           <button
             onClick={() => void submit()}
-            disabled={submitting || uploading}
+            disabled={submitting || uploading || coverUploading}
             style={{ marginTop: 16, padding: '10px 24px', borderRadius: 8, border: 'none', background: '#E1306C', color: 'white', fontWeight: 600, cursor: 'pointer', opacity: submitting ? 0.6 : 1 }}
           >
             {submitting
@@ -376,7 +565,10 @@ export default function PostsPage() {
               const badge = STATUS_BADGES[post.status] ?? STATUS_BADGES.canceled
               return (
                 <div key={post.id} style={{ border: '1px solid #E5E7EB', borderRadius: 12, padding: 16, display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-                  {post.media[0] && post.media[0].type === 'image' ? (
+                  {post.coverUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={post.coverUrl} alt="" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }} />
+                  ) : post.media[0] && post.media[0].type === 'image' ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={post.media[0].url} alt="" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }} />
                   ) : (
@@ -392,6 +584,11 @@ export default function PostsPage() {
                     </div>
                     {post.caption && (
                       <p style={{ fontSize: 13, color: '#4B5563', margin: '4px 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{post.caption}</p>
+                    )}
+                    {post.postType === 'reel' && (post.coverUrl || post.thumbOffsetMs !== null) && (
+                      <p style={{ fontSize: 12, color: '#6B7280', margin: '4px 0 0' }}>
+                        表紙: {post.coverUrl ? 'アップロード画像' : `動画の先頭から ${(post.thumbOffsetMs ?? 0) / 1000}秒`}
+                      </p>
                     )}
                     <p style={{ fontSize: 12, color: '#9CA3AF', margin: 0 }}>
                       {post.status === 'scheduled' ? `予約: ${post.scheduledAt}` : `更新: ${post.updatedAt}`}

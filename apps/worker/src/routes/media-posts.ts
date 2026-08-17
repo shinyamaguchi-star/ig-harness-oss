@@ -33,6 +33,8 @@ function serializeMediaPost(row: MediaPost) {
     postType: row.post_type,
     media,
     caption: row.caption,
+    coverUrl: row.cover_url,
+    thumbOffsetMs: row.thumb_offset_ms,
     status: row.status,
     scheduledAt: row.scheduled_at,
     creationId: row.creation_id,
@@ -89,6 +91,33 @@ export function validateMediaPostInput(
   }
 }
 
+/** Validate Reel-only cover inputs independently so the route and tests use
+ * the exact same rules. A custom image wins when both values are supplied. */
+export function validateReelCoverInput(
+  postType: MediaPostType,
+  coverUrl: unknown,
+  thumbOffsetMs: unknown,
+): string | null {
+  const hasCover = coverUrl !== undefined && coverUrl !== null && coverUrl !== '';
+  const hasOffset = thumbOffsetMs !== undefined && thumbOffsetMs !== null;
+  if ((hasCover || hasOffset) && postType !== 'reel') {
+    return 'cover_url and thumb_offset_ms are only supported for reel posts';
+  }
+  if (hasCover && (typeof coverUrl !== 'string' || !/^https:\/\//.test(coverUrl))) {
+    return 'cover_url must be a public https URL';
+  }
+  if (
+    hasOffset &&
+    (typeof thumbOffsetMs !== 'number' ||
+      !Number.isInteger(thumbOffsetMs) ||
+      !Number.isSafeInteger(thumbOffsetMs) ||
+      thumbOffsetMs < 0)
+  ) {
+    return 'thumb_offset_ms must be a non-negative safe integer';
+  }
+  return null;
+}
+
 /**
  * Normalize a client-supplied scheduled_at to a JST (+09:00) string.
  * Offset-less strings (e.g. "2026-07-24T09:00" from datetime-local) are
@@ -131,6 +160,8 @@ mediaPosts.post('/api/media-posts', async (c) => {
     post_type?: MediaPostType;
     media?: MediaPostMediaItem[];
     caption?: string;
+    cover_url?: string | null;
+    thumb_offset_ms?: number | null;
     scheduled_at?: string;
   };
   try {
@@ -140,6 +171,12 @@ mediaPosts.post('/api/media-posts', async (c) => {
   }
   const validationError = validateMediaPostInput(body.post_type as MediaPostType, body.media ?? []);
   if (validationError) return c.json({ success: false, error: validationError }, 400);
+  const coverValidationError = validateReelCoverInput(
+    body.post_type as MediaPostType,
+    body.cover_url,
+    body.thumb_offset_ms,
+  );
+  if (coverValidationError) return c.json({ success: false, error: coverValidationError }, 400);
   let normalizedScheduledAt: string | null = null;
   if (body.scheduled_at) {
     normalizedScheduledAt = normalizeScheduledAt(body.scheduled_at);
@@ -154,6 +191,8 @@ mediaPosts.post('/api/media-posts', async (c) => {
     postType: body.post_type as MediaPostType,
     media: body.media as MediaPostMediaItem[],
     caption: body.caption ?? null,
+    coverUrl: body.cover_url ?? null,
+    thumbOffsetMs: body.cover_url ? null : body.thumb_offset_ms ?? null,
     // Normalize to JST (+09:00) — due-check is a SQL string compare, so a
     // client-sent "Z" timestamp must not be stored as-is (see Task 1 note).
     scheduledAt: normalizedScheduledAt ?? jstNow(),

@@ -40,6 +40,8 @@ function makePost(overrides: Record<string, unknown> = {}) {
     post_type: 'feed_image',
     media: JSON.stringify([{ url: 'https://example.com/a.jpg', type: 'image' }]),
     caption: 'hi',
+    cover_url: null,
+    thumb_offset_ms: null,
     status: 'scheduled',
     scheduled_at: '2026-07-23T10:00:00.000+09:00',
     creation_id: null,
@@ -125,6 +127,44 @@ describe('processMediaPosts — scheduled posts', () => {
         creation_id: 'parent-1',
         child_creation_ids: JSON.stringify(['child-1', 'child-2']),
       }),
+    );
+  });
+
+  it('reel: sends a custom cover URL and ignores the frame offset', async () => {
+    const post = makePost({
+      post_type: 'reel',
+      media: JSON.stringify([{ url: 'https://example.com/reel.mp4', type: 'video' }]),
+      cover_url: 'https://example.com/cover.jpg',
+      thumb_offset_ms: 2500,
+    });
+    vi.mocked(getDueMediaPosts).mockResolvedValueOnce([post] as any);
+    const client = makeClient();
+
+    await processMediaPosts(db, client, 'acc-1');
+
+    expect(client.createMediaContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mediaType: 'REELS',
+        videoUrl: 'https://example.com/reel.mp4',
+        coverUrl: 'https://example.com/cover.jpg',
+        thumbOffsetMs: undefined,
+      }),
+    );
+  });
+
+  it('reel: sends the selected video frame offset when no cover URL exists', async () => {
+    const post = makePost({
+      post_type: 'reel',
+      media: JSON.stringify([{ url: 'https://example.com/reel.mp4', type: 'video' }]),
+      thumb_offset_ms: 3200,
+    });
+    vi.mocked(getDueMediaPosts).mockResolvedValueOnce([post] as any);
+    const client = makeClient();
+
+    await processMediaPosts(db, client, 'acc-1');
+
+    expect(client.createMediaContainer).toHaveBeenCalledWith(
+      expect.objectContaining({ thumbOffsetMs: 3200, coverUrl: undefined }),
     );
   });
 

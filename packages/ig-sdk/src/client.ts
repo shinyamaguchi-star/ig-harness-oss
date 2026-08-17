@@ -303,6 +303,10 @@ export class InstagramClient {
     if (params.videoUrl) qs.set('video_url', params.videoUrl);
     if (params.mediaType) qs.set('media_type', params.mediaType);
     if (params.caption) qs.set('caption', params.caption);
+    if (params.coverUrl) qs.set('cover_url', params.coverUrl);
+    if (params.thumbOffsetMs !== undefined) {
+      qs.set('thumb_offset', String(params.thumbOffsetMs));
+    }
     if (params.children && params.children.length > 0) {
       qs.set('children', params.children.join(','));
     }

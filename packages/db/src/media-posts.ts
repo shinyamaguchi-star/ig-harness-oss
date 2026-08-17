@@ -16,6 +16,10 @@ export interface MediaPost {
   /** JSON-encoded MediaPostMediaItem[] */
   media: string;
   caption: string | null;
+  /** Reel-only custom cover image. Must be publicly fetchable by Meta. */
+  cover_url: string | null;
+  /** Reel-only frame offset in milliseconds; ignored when cover_url is set. */
+  thumb_offset_ms: number | null;
   status: MediaPostStatus;
   scheduled_at: string;
   creation_id: string | null;
@@ -37,6 +41,8 @@ export interface CreateMediaPostInput {
   postType: MediaPostType;
   media: MediaPostMediaItem[];
   caption?: string | null;
+  coverUrl?: string | null;
+  thumbOffsetMs?: number | null;
   scheduledAt: string;
 }
 
@@ -48,10 +54,10 @@ export async function createMediaPost(
   const result = await db
     .prepare(
       `INSERT INTO media_posts
-         (id, account_id, post_type, media, caption, status, scheduled_at,
+         (id, account_id, post_type, media, caption, cover_url, thumb_offset_ms, status, scheduled_at,
           creation_id, child_creation_ids, published_media_id, attempt_count,
           error, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'scheduled', ?, NULL, NULL, NULL, 0, NULL, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, NULL, NULL, NULL, 0, NULL, ?, ?)
        RETURNING *`,
     )
     .bind(
@@ -60,6 +66,8 @@ export async function createMediaPost(
       input.postType,
       JSON.stringify(input.media),
       input.caption ?? null,
+      input.coverUrl ?? null,
+      input.coverUrl ? null : input.thumbOffsetMs ?? null,
       input.scheduledAt,
       now,
       now,

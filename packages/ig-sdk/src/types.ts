@@ -217,6 +217,10 @@ export interface CreateContainerParams {
    */
   mediaType?: 'REELS' | 'STORIES' | 'CAROUSEL' | 'VIDEO';
   caption?: string;
+  /** Public image URL used as the cover in the Reels tab. */
+  coverUrl?: string;
+  /** Video frame offset in milliseconds. Ignored by Meta when coverUrl exists. */
+  thumbOffsetMs?: number;
   children?: string[];
   isCarouselItem?: boolean;
 }

@@ -110,6 +110,8 @@ async function startPost(
         videoUrl: media[0].url,
         mediaType: 'REELS',
         caption: post.caption ?? undefined,
+        coverUrl: post.cover_url ?? undefined,
+        thumbOffsetMs: post.cover_url ? undefined : post.thumb_offset_ms ?? undefined,
       });
       creationId = created.id;
     } else if (post.post_type === 'story') {

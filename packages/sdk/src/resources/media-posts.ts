@@ -15,6 +15,8 @@ export class MediaPostsResource {
       post_type: input.postType,
       media: input.media,
       caption: input.caption,
+      cover_url: input.coverUrl,
+      thumb_offset_ms: input.coverUrl ? undefined : input.thumbOffsetMs,
       scheduled_at: input.scheduledAt,
     })
     return res.data

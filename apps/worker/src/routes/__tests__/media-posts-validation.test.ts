@@ -4,7 +4,11 @@
  * (final review Fix 2).
  */
 import { describe, it, expect } from 'vitest';
-import { validateMediaPostInput, normalizeScheduledAt } from '../media-posts.js';
+import {
+  validateMediaPostInput,
+  validateReelCoverInput,
+  normalizeScheduledAt,
+} from '../media-posts.js';
 
 const img = { url: 'https://example.com/a.jpg', type: 'image' as const };
 const vid = { url: 'https://example.com/v.mp4', type: 'video' as const };
@@ -48,6 +52,35 @@ describe('validateMediaPostInput', () => {
   });
   it('rejects empty media', () => {
     expect(validateMediaPostInput('story', [])).toMatch(/media/);
+  });
+});
+
+describe('validateReelCoverInput', () => {
+  it('accepts a public cover URL for a reel', () => {
+    expect(
+      validateReelCoverInput('reel', 'https://cdn.example.com/cover.jpg', undefined),
+    ).toBeNull();
+  });
+
+  it('accepts a non-negative thumbnail offset for a reel', () => {
+    expect(validateReelCoverInput('reel', undefined, 2500)).toBeNull();
+  });
+
+  it('rejects cover settings for non-reel posts', () => {
+    expect(
+      validateReelCoverInput('feed_image', 'https://cdn.example.com/cover.jpg', undefined),
+    ).toMatch(/reel/i);
+  });
+
+  it('rejects a non-public cover URL', () => {
+    expect(validateReelCoverInput('reel', 'http://localhost/cover.jpg', undefined)).toMatch(
+      /https/i,
+    );
+  });
+
+  it('rejects negative or fractional millisecond offsets', () => {
+    expect(validateReelCoverInput('reel', undefined, -1)).toMatch(/non-negative/i);
+    expect(validateReelCoverInput('reel', undefined, 1.5)).toMatch(/integer/i);
   });
 });
 

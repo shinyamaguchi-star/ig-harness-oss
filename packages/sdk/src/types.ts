@@ -836,6 +836,8 @@ export interface MediaPost {
   postType: MediaPostType
   media: MediaPostMediaItem[]
   caption: string | null
+  coverUrl: string | null
+  thumbOffsetMs: number | null
   status: MediaPostStatus
   scheduledAt: string
   creationId: string | null
@@ -853,6 +855,10 @@ export interface CreateMediaPostInput {
   postType: MediaPostType
   media: MediaPostMediaItem[]
   caption?: string
+  /** Reel-only public cover image URL. */
+  coverUrl?: string
+  /** Reel-only video frame offset in milliseconds. */
+  thumbOffsetMs?: number
   /** ISO 8601。省略で即時投稿 */
   scheduledAt?: string
 }
