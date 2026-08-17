@@ -90,6 +90,8 @@ const fakeIgClient = {
   sendQuickReply: vi.fn(async () => ({})),
   sendText: vi.fn(async () => ({})),
   getUserProfile: vi.fn(async () => ({ is_user_follow_business: true })),
+  replyToComment: vi.fn(async () => ({})),
+  postCommentToMedia: vi.fn(async () => ({})),
 };
 
 describe('triggerGateForComment', () => {
@@ -228,6 +230,29 @@ describe('triggerGateForComment', () => {
     });
 
     expect(db.deliveries).toHaveLength(0);
+  });
+
+  it('replies inside the triggering comment thread and removes a legacy leading mention', async () => {
+    const db = createMockDb();
+    db.gates.push({
+      id: 'gate-threaded-reply', status: 'active', trigger_type: 'comment_on_post',
+      target_post_id: 'post-1', trigger_keyword: null,
+      require_follow: 1, initial_dm_text: 'x', initial_dm_button_label: 'x',
+      follow_reminder_dm_text: '', follow_reminder_button_label: '',
+      reward_dm_text: '', reward_url: null, max_loops: 0,
+      comment_reply_text: '@{{username}} DMを確認してね',
+    });
+
+    await triggerGateForComment(db, fakeIgClient as never, {
+      postId: 'post-1',
+      commentId: 'comment-123',
+      commentText: '欲しい',
+      commenterUsername: 'sample_user',
+      follower: { id: 42, igsid: 'IGSID42' },
+    });
+
+    expect(fakeIgClient.replyToComment).toHaveBeenCalledWith('comment-123', 'DMを確認してね');
+    expect(fakeIgClient.postCommentToMedia).not.toHaveBeenCalled();
   });
 });
 

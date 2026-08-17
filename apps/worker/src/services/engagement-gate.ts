@@ -58,7 +58,6 @@ interface IgClientLike {
   ): Promise<{ sentBlocks: number }>;
   getUserProfile(igsid: string): Promise<UserProfile>;
   replyToComment(commentId: string, message: string): Promise<unknown>;
-  postCommentToMedia(mediaId: string, message: string): Promise<unknown>;
 }
 
 interface FollowerRef {
@@ -149,15 +148,10 @@ export async function triggerGateForComment(
     await sendCtaDm(db, igClient, gate, delivery, args.igAccount);
     await updateGateDelivery(db, delivery.id, { status: 'cta_sent' });
 
-    // Optional public comment. Posted after the DM so a failure doesn't
-    // block delivery.
-    //
-    // Why postCommentToMedia instead of replyToComment:
-    //   /{comment_id}/replies requires Advanced Access for external
-    //   commenters' comments — under Standard Access it always returns
-    //   "Object does not exist". Top-level comment with @username has
-    //   identical UX (visible mention to the commenter) and works under
-    //   Standard Access since the app owner is posting on their own media.
+    // Optional public reply. It is attached to the triggering comment via
+    // /{comment_id}/replies so it appears inside that comment's thread,
+    // rather than as a new top-level @mention comment on the media.
+    // Posted after the DM so a reply failure never blocks DM delivery.
     //
     // Supports rotation: comment_reply_text can be a plain string OR a
     // JSON array of strings. When it's an array, a random entry is
@@ -166,14 +160,18 @@ export async function triggerGateForComment(
       const patterns = parseCommentReplyPatterns(gate.comment_reply_text);
       if (patterns.length > 0) {
         const picked = patterns[Math.floor(Math.random() * patterns.length)]!;
-        const replyText = picked.replace(
-          /\{\{\s*username\s*\}\}/g,
-          args.commenterUsername ?? '',
-        );
-        try {
-          await igClient.postCommentToMedia(args.postId, replyText);
-        } catch (err) {
-          console.error('[gate] comment post failed:', err);
+        const replyText = formatThreadReplyText(picked, args.commenterUsername);
+        if (!args.commentId) {
+          console.warn('[gate] threaded comment reply skipped: missing comment id');
+        } else if (replyText) {
+          try {
+            await igClient.replyToComment(args.commentId, replyText);
+          } catch (err) {
+            // Deliberately do not fall back to a top-level @mention comment:
+            // the operator selected threaded replies and requested that the
+            // old top-level behavior never be used.
+            console.error('[gate] threaded comment reply failed:', err);
+          }
         }
       }
     }
@@ -268,6 +266,31 @@ function parseCommentReplyPatterns(raw: string): string[] {
     }
   }
   return [trimmed];
+}
+
+/**
+ * Expand a stored reply pattern for a threaded reply. Older campaigns used
+ * "@{{username}} ..." because replies were posted as top-level comments.
+ * Strip that legacy leading mention automatically; the parent comment now
+ * identifies the recipient, so repeating the @mention is unnecessary.
+ */
+export function formatThreadReplyText(pattern: string, commenterUsername?: string): string {
+  let result = pattern.trim().replace(
+    /^\s*@\{\{\s*username\s*\}\}(?:\s+|[,:\uff1a\u3001-]+\s*|$)/i,
+    '',
+  );
+
+  result = result.replace(/\{\{\s*username\s*\}\}/g, commenterUsername ?? '');
+
+  if (commenterUsername) {
+    const escapedUsername = commenterUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    result = result.replace(
+      new RegExp(`^\\s*@${escapedUsername}(?:\\s+|[,:\uff1a\u3001-]+\\s*|$)`, 'i'),
+      '',
+    );
+  }
+
+  return result.trim();
 }
 
 // richMessageLabel removed — body now stores full JSON for rich rendering in admin UI

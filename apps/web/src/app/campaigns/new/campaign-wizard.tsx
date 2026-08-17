@@ -110,9 +110,9 @@ interface WizardState {
    *  the first click back to LINE captures the IG↔LINE userId pair. */
   lineConnectionId: string
   linePoolSlug: string
-  /** 1-3 candidate public comment replies. On each gate firing the
+  /** 1-3 candidate threaded comment replies. On each gate firing the
    *  webhook picks one at random so replies don't look robotic.
-   *  Supports {{username}} placeholder. All blank = no public reply. */
+   *  All blank = no public reply. */
   commentReplyTexts: string[]
   /** Up to 3 follow-up DMs sent after the reward inside the 24h window. */
   followupSteps: FollowupStepInput[]
@@ -145,9 +145,9 @@ const DEFAULTS: WizardState = {
   lineConnectionId: '',
   linePoolSlug: '',
   commentReplyTexts: [
-    '@{{username}} DM送ったよ📩 届いてなかったら「リクエスト」フォルダ見てね',
-    '@{{username}} ありがとう🎁 DMチェックしてね',
-    '@{{username}} 受け取れるようDM送ったよ✨',
+    'DMを送りました📩 届いていなければ「リクエスト」フォルダを確認してください',
+    'コメントありがとうございます🎁 DMをご確認ください',
+    '特典をDMで送りました✨',
   ],
   followupSteps: [],
   reminderMode: 'new',
@@ -912,7 +912,7 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
               <div className="mt-4 pt-4 border-t border-gray-100">
                 <div className="flex items-center justify-between mb-2">
                   <label className="block text-xs font-medium text-gray-600">
-                    コメントへの公開返信（任意）
+                    コメントへのスレッド返信（任意）
                   </label>
                   <span className="text-[10px] text-gray-400">{s.commentReplyTexts.length}/3 パターン</span>
                 </div>
@@ -929,7 +929,7 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                           next[idx] = e.target.value
                           update('commentReplyTexts', next)
                         }}
-                        placeholder={idx === 0 ? '例: @{{username}} DMでプレゼント送ったよ！🎁' : 'バリエーション（任意）'}
+                        placeholder={idx === 0 ? '例: DMでプレゼントを送りました！🎁' : 'バリエーション（任意）'}
                         rows={2}
                         className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#E1306C]"
                       />
@@ -960,10 +960,10 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                   </button>
                 )}
                 <p className="mt-2 text-[11px] text-gray-400">
-                  複数入れると毎回ランダムで1つ選ばれます（ボット感を減らす）。<code className="font-mono">{'{{username}}'}</code> でコメントした人の @username を差し込めます。全部空欄ならDMのみ。
+                  複数入れると毎回ランダムで1つ選ばれます（ボット感を減らす）。全部空欄ならDMのみです。
                 </p>
                 <p className="mt-1 text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
-                  ℹ️ IG仕様：これは <code className="font-mono">POST /&#123;media_id&#125;/comments</code> による @mention 付きトップレベルコメントとして投下されます（親コメント直下のスレッド返信ではありません）。本物のスレッド型 reply は Meta App Review (Advanced Access) 通過後のみ動作します。
+                  ℹ️ 元のコメント直下にスレッド返信します。@username の入力は不要です。旧設定の先頭にある <code className="font-mono">{'@{{username}}'}</code> は送信時に自動で取り除かれます。
                 </p>
                 <p className="mt-1 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
                   ⚠️ IG仕様：未フォローのユーザーへのDMは「メッセージリクエスト」に振り分けられたり届かないことがあります。公開返信でリクエスト確認を促すと到達率UP。
@@ -1463,13 +1463,24 @@ function parseReplyPatternsForEdit(raw: string): string[] {
     try {
       const parsed = JSON.parse(trimmed)
       if (Array.isArray(parsed)) {
-        return parsed.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+        return parsed
+          .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+          .map(stripLegacyReplyMention)
+          .filter((x) => x.length > 0)
       }
     } catch {
       /* fall through */
     }
   }
-  return [trimmed]
+  const cleaned = stripLegacyReplyMention(trimmed)
+  return cleaned ? [cleaned] : []
+}
+
+function stripLegacyReplyMention(text: string): string {
+  return text
+    .trim()
+    .replace(/^\s*@\{\{\s*username\s*\}\}(?:\s+|[,:：、-]+\s*|$)/i, '')
+    .trim()
 }
 
 /**

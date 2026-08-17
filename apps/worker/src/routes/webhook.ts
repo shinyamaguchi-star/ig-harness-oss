@@ -349,10 +349,9 @@ async function handleCommentEvent(
   const commentText = value.text;
   const mediaId = value.media.id;
 
-  // Skip our own comments — when the gate posts a public reply via
-  // postCommentToMedia, IG fires a comment webhook for that too. Without
-  // this guard we'd try to DM ourselves, fail, and pollute the gate
-  // delivery table with a self-trigger.
+  // Skip our own comments/replies — Instagram can fire a comment webhook
+  // for the threaded reply posted by the gate too. Without this guard we'd
+  // try to DM ourselves and pollute the gate delivery table.
   if (senderId === igUserId) {
     return;
   }

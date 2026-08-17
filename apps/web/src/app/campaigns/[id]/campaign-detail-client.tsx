@@ -405,7 +405,7 @@ export default function CampaignDetailClient() {
         {gate.trigger_type === 'comment_on_post' && gate.comment_reply_text && (
           <div>
             <div className="text-xs font-medium text-gray-500 mb-1.5">
-              コメント公開返信
+              コメントへのスレッド返信
               {parseReplyPatterns(gate.comment_reply_text).length > 1 &&
                 `（${parseReplyPatterns(gate.comment_reply_text).length}パターンからランダム）`}
             </div>
@@ -646,13 +646,24 @@ function parseReplyPatterns(raw: string): string[] {
     try {
       const parsed = JSON.parse(trimmed)
       if (Array.isArray(parsed)) {
-        return parsed.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+        return parsed
+          .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+          .map(stripLegacyReplyMention)
+          .filter((x) => x.length > 0)
       }
     } catch {
       /* fall through */
     }
   }
-  return [trimmed]
+  const cleaned = stripLegacyReplyMention(trimmed)
+  return cleaned ? [cleaned] : []
+}
+
+function stripLegacyReplyMention(text: string): string {
+  return text
+    .trim()
+    .replace(/^\s*@\{\{\s*username\s*\}\}(?:\s+|[,:：、-]+\s*|$)/i, '')
+    .trim()
 }
 
 function Funnel({ steps }: { steps: Array<{ label: string; sub: string; value: number; emoji: string }> }) {
