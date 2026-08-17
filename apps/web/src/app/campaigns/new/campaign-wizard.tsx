@@ -86,6 +86,9 @@ interface WizardState {
    *   - story_mention: unused
    */
   keyword: string
+  /** Comment-only partial-match keywords. Any one match fires the campaign;
+   * all blank means every comment. Up to 10 entries. */
+  commentKeywords: string[]
   /** First DM sent when a qualifying comment lands */
   ctaMode: SlotMode
   ctaExistingId: string
@@ -126,6 +129,7 @@ const DEFAULTS: WizardState = {
   targetMediaIds: [],
   targetMediaPreviews: {},
   keyword: '',
+  commentKeywords: [''],
   ctaMode: 'new',
   ctaExistingId: '',
   ctaImageUrl: '',
@@ -150,6 +154,21 @@ const DEFAULTS: WizardState = {
   reminderExistingId: '',
   reminderText: 'まずは @ をフォローしてから、もう一度このボタンを押してね',
   reminderButtonLabel: 'フォローしたよ',
+}
+
+function normalizedCommentKeywords(values: string[]): string[] {
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    const keyword = value.trim()
+    if (!keyword) continue
+    const dedupeKey = keyword.toLocaleLowerCase()
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
+    result.push(keyword)
+    if (result.length === 10) break
+  }
+  return result
 }
 
 interface CampaignWizardProps {
@@ -562,7 +581,15 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
         status: scheduledPostId ? 'paused' : undefined,
         scheduled_media_post_id: scheduledPostId || undefined,
         trigger_keyword:
-          s.triggerType === 'story_mention' ? null : s.keyword.trim() || null,
+          s.triggerType === 'story_mention'
+            ? null
+            : s.triggerType === 'comment_on_post'
+              ? normalizedCommentKeywords(s.commentKeywords)[0] ?? null
+              : s.keyword.trim() || null,
+        trigger_keywords:
+          s.triggerType === 'comment_on_post'
+            ? normalizedCommentKeywords(s.commentKeywords)
+            : undefined,
         require_follow: s.requireFollow ? 1 : 0,
         initial_dm_text: s.ctaText || 'お知らせ',
         initial_dm_button_label: s.ctaButtonLabel,
@@ -787,14 +814,60 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                 )}
 
                 <div className="mt-3 pt-3 border-t border-gray-100">
-                  <label className="block text-xs font-medium text-gray-600 mb-1">キーワード（任意）</label>
-                  <input
-                    type="text"
-                    value={s.keyword}
-                    onChange={(e) => update('keyword', e.target.value)}
-                    placeholder="例: 欲しい（空欄なら全コメントに反応）"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#E1306C]"
-                  />
+                  <div className="mb-2 flex items-center justify-between">
+                    <label className="block text-xs font-medium text-gray-600">
+                      反応するコメントキーワード（任意）
+                    </label>
+                    <span className="text-[10px] text-gray-400">最大10個</span>
+                  </div>
+                  <div className="space-y-2">
+                    {s.commentKeywords.map((keyword, index) => (
+                      <div key={index} className="flex items-center gap-2">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[10px] font-medium text-gray-600">
+                          {index + 1}
+                        </span>
+                        <input
+                          type="text"
+                          value={keyword}
+                          maxLength={100}
+                          onChange={(e) => {
+                            const next = [...s.commentKeywords]
+                            next[index] = e.target.value
+                            update('commentKeywords', next)
+                          }}
+                          placeholder={index === 0 ? '例: 欲しい' : '例: ほしい、希望、お願いします'}
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#E1306C]"
+                        />
+                        {s.commentKeywords.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              update(
+                                'commentKeywords',
+                                s.commentKeywords.filter((_, i) => i !== index),
+                              )
+                            }
+                            className="rounded p-1 text-red-500 hover:bg-red-50"
+                            aria-label={`キーワード${index + 1}を削除`}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {s.commentKeywords.length < 10 && (
+                    <button
+                      type="button"
+                      onClick={() => update('commentKeywords', [...s.commentKeywords, ''])}
+                      className="mt-2 w-full rounded-lg border border-dashed border-gray-300 py-1.5 text-xs font-medium text-gray-500 hover:border-[#E1306C] hover:text-[#E1306C]"
+                    >
+                      + キーワードを追加
+                    </button>
+                  )}
+                  <p className="mt-2 text-[11px] leading-relaxed text-gray-400">
+                    いずれか1つを含むコメントで発動します（部分一致・大文字小文字は区別しません）。全部空欄なら、すべてのコメントに反応します。
+                  </p>
                 </div>
               </>
             )}
@@ -1334,7 +1407,15 @@ function hydrateStateFromGate(
     triggerType: gate.trigger_type,
     targetMediaIds: targetIds,
     targetMediaPreviews: {},
-    keyword: gate.trigger_keyword ?? '',
+    keyword: gate.trigger_type === 'dm_keyword' ? gate.trigger_keyword ?? '' : '',
+    commentKeywords:
+      gate.trigger_type === 'comment_on_post'
+        ? gate.trigger_keywords && gate.trigger_keywords.length > 0
+          ? gate.trigger_keywords
+          : gate.trigger_keyword
+            ? [gate.trigger_keyword]
+            : ['']
+        : [''],
 
     ctaMode: ctaExisting ? 'existing' : 'new',
     ctaExistingId: gate.initial_dm_rich_message_id ?? '',

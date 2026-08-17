@@ -206,6 +206,16 @@ export default function CampaignDetailClient() {
   }
 
   const trigger = TRIGGER_LABELS[gate.trigger_type] ?? { emoji: '⚡', label: gate.trigger_type }
+  const triggerKeywords =
+    gate.trigger_type === 'comment_on_post'
+      ? gate.trigger_keywords && gate.trigger_keywords.length > 0
+        ? gate.trigger_keywords
+        : gate.trigger_keyword
+          ? [gate.trigger_keyword]
+          : []
+      : gate.trigger_keyword
+        ? [gate.trigger_keyword]
+        : []
   const statusBadgeClass =
     gate.status === 'active'
       ? 'bg-green-100 text-green-700'
@@ -308,10 +318,13 @@ export default function CampaignDetailClient() {
           <div className="text-xs font-medium text-gray-500 mb-1.5">何に反応</div>
           <div className="text-sm text-gray-800">
             {trigger.emoji} {trigger.label}
-            {gate.trigger_keyword && (
-              <span className="ml-2 inline-flex px-2 py-0.5 rounded bg-pink-50 text-[#E1306C] text-xs">
-                キーワード: {gate.trigger_keyword}
+            {triggerKeywords.map((keyword) => (
+              <span key={keyword} className="ml-2 inline-flex px-2 py-0.5 rounded bg-pink-50 text-[#E1306C] text-xs">
+                {keyword}
               </span>
+            ))}
+            {gate.trigger_type === 'comment_on_post' && triggerKeywords.length === 0 && (
+              <span className="ml-2 text-xs text-gray-500">すべてのコメント</span>
             )}
           </div>
         </div>
@@ -390,7 +403,9 @@ export default function CampaignDetailClient() {
             kind="trigger"
             label={
               gate.trigger_type === 'comment_on_post'
-                ? 'ユーザーがリールにコメント'
+                ? triggerKeywords.length > 0
+                  ? `ユーザーがリールにコメント（${triggerKeywords.map((keyword) => `「${keyword}」`).join('・')}のいずれかを含む）`
+                  : 'ユーザーがリールにコメント（すべてのコメント）'
                 : gate.trigger_type === 'dm_keyword'
                   ? `ユーザーが DM を送信（${gate.trigger_keyword ? `キーワード「${gate.trigger_keyword}」を含む` : '任意の内容'}）`
                   : 'ユーザーが自分のストーリーをメンション'

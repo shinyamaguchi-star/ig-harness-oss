@@ -124,6 +124,8 @@ export interface EngagementGate {
   trigger_type: 'comment_on_post' | 'dm_keyword' | 'story_mention'
   target_post_id: string | null
   trigger_keyword: string | null
+  /** Comment campaigns fire when any one of these partial-match keywords is found. */
+  trigger_keywords?: string[]
   require_follow: number
   initial_dm_text: string
   initial_dm_button_label: string

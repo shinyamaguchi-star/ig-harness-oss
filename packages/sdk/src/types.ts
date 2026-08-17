@@ -528,6 +528,8 @@ export interface EngagementGate {
   trigger_type: EngagementGateTriggerType
   target_post_id: string | null
   trigger_keyword: string | null
+  /** Comment campaigns fire when any one of these keywords is contained in the comment. */
+  trigger_keywords?: string[]
   require_follow: number
   initial_dm_text: string
   initial_dm_button_label: string
@@ -583,6 +585,7 @@ export interface CreateEngagementGateInput {
   trigger_type: EngagementGateTriggerType
   target_post_id?: string | null
   trigger_keyword?: string | null
+  trigger_keywords?: string[]
   require_follow?: number
   initial_dm_text?: string
   initial_dm_button_label?: string
@@ -614,6 +617,7 @@ export interface UpdateEngagementGateInput {
   trigger_type?: EngagementGateTriggerType
   target_post_id?: string | null
   trigger_keyword?: string | null
+  trigger_keywords?: string[]
   require_follow?: number
   initial_dm_text?: string
   initial_dm_button_label?: string

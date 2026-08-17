@@ -149,6 +149,16 @@ function CampaignCard({
 }) {
   const trigger = TRIGGER_LABELS[gate.trigger_type] ?? { emoji: '⚡', label: gate.trigger_type }
   const targets = gate.target_post_ids ?? (gate.target_post_id ? [gate.target_post_id] : [])
+  const triggerKeywords =
+    gate.trigger_type === 'comment_on_post'
+      ? gate.trigger_keywords && gate.trigger_keywords.length > 0
+        ? gate.trigger_keywords
+        : gate.trigger_keyword
+          ? [gate.trigger_keyword]
+          : []
+      : gate.trigger_keyword
+        ? [gate.trigger_keyword]
+        : []
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-sm transition-shadow">
@@ -165,10 +175,13 @@ function CampaignCard({
               <span className="text-gray-500">
                 {trigger.emoji} {trigger.label}
               </span>
-              {gate.trigger_keyword && (
-                <span className="px-1.5 py-0.5 rounded bg-pink-50 text-[#E1306C]">
-                  「{gate.trigger_keyword}」
+              {triggerKeywords.slice(0, 3).map((keyword) => (
+                <span key={keyword} className="px-1.5 py-0.5 rounded bg-pink-50 text-[#E1306C]">
+                  「{keyword}」
                 </span>
+              ))}
+              {triggerKeywords.length > 3 && (
+                <span className="text-gray-400">ほか{triggerKeywords.length - 3}個</span>
               )}
               <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full font-medium ${STATUS_CLASSES[gate.status] ?? 'bg-gray-100 text-gray-500'}`}>
                 {STATUS_LABELS[gate.status] ?? gate.status}

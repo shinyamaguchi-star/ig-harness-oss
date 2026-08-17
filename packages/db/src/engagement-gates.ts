@@ -7,6 +7,9 @@ export interface EngagementGate {
   trigger_type: 'comment_on_post' | 'dm_keyword' | 'story_mention';
   target_post_id: string | null;
   trigger_keyword: string | null;
+  /** JSON-serialized string[] for comment triggers. Falls back to the legacy
+   * trigger_keyword column when NULL so existing campaigns keep working. */
+  trigger_keywords?: string | null;
   require_follow: number;
   initial_dm_text: string;
   initial_dm_button_label: string;
@@ -74,6 +77,28 @@ export function parseFollowupSequence(raw: string | null | undefined): FollowupD
   }
 }
 
+/** Return the normalized list of comment keywords for a gate. New rows use
+ * trigger_keywords JSON; legacy rows keep working through trigger_keyword. */
+export function parseGateTriggerKeywords(
+  gate: Pick<EngagementGate, 'trigger_keyword' | 'trigger_keywords'>,
+): string[] {
+  if (gate.trigger_keywords) {
+    try {
+      const parsed: unknown = JSON.parse(gate.trigger_keywords);
+      if (Array.isArray(parsed)) {
+        const keywords = parsed
+          .filter((value): value is string => typeof value === 'string')
+          .map((value) => value.trim())
+          .filter(Boolean);
+        if (keywords.length > 0) return Array.from(new Set(keywords));
+      }
+    } catch {
+      // Fall through to the legacy single-keyword column.
+    }
+  }
+  return gate.trigger_keyword?.trim() ? [gate.trigger_keyword.trim()] : [];
+}
+
 export interface GateDelivery {
   id: string;
   gate_id: string;
@@ -100,7 +125,7 @@ export async function createEngagementGate(
   await db
     .prepare(
       `INSERT INTO engagement_gates
-       (id, name, status, trigger_type, target_post_id, trigger_keyword,
+       (id, name, status, trigger_type, target_post_id, trigger_keyword, trigger_keywords,
         require_follow, initial_dm_text, initial_dm_button_label,
         follow_reminder_dm_text, follow_reminder_button_label,
         reward_dm_text, reward_url, max_loops,
@@ -108,11 +133,11 @@ export async function createEngagementGate(
         follow_reminder_dm_rich_message_id, comment_reply_text,
         followup_dm_sequence,
         line_connection_id, line_pool_slug, allow_repeat, account_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id, gate.name, gate.status, gate.trigger_type, gate.target_post_id,
-      gate.trigger_keyword, gate.require_follow, gate.initial_dm_text,
+      gate.trigger_keyword, gate.trigger_keywords ?? null, gate.require_follow, gate.initial_dm_text,
       gate.initial_dm_button_label, gate.follow_reminder_dm_text,
       gate.follow_reminder_button_label, gate.reward_dm_text,
       gate.reward_url, gate.max_loops,
@@ -241,6 +266,7 @@ const UPDATABLE_GATE_FIELDS = [
   'trigger_type',
   'target_post_id',
   'trigger_keyword',
+  'trigger_keywords',
   'require_follow',
   'initial_dm_text',
   'initial_dm_button_label',

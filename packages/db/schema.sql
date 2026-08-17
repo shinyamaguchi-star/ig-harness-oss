@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS engagement_gates (
   trigger_type TEXT NOT NULL CHECK(trigger_type IN ('comment_on_post','dm_keyword','story_mention')),
   target_post_id TEXT,
   trigger_keyword TEXT,
+  trigger_keywords TEXT,
   require_follow INTEGER NOT NULL DEFAULT 1,
   initial_dm_text TEXT NOT NULL,
   initial_dm_button_label TEXT NOT NULL DEFAULT '特典を受け取る',

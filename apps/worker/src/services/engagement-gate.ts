@@ -1,4 +1,4 @@
-import { listEngagementGates, createGateDelivery, updateGateDelivery, getGateDelivery, getEngagementGate, getRichMessage, parseFollowupSequence, logMessage } from '@ig-harness/db';
+import { listEngagementGates, createGateDelivery, updateGateDelivery, getGateDelivery, getEngagementGate, getRichMessage, parseFollowupSequence, parseGateTriggerKeywords, logMessage } from '@ig-harness/db';
 import type { EngagementGate, GateDelivery } from '@ig-harness/db';
 import type { UserProfile, RichMessageBlock, RichMessageContext } from '@ig-harness/ig-sdk';
 import { resolveLineCrossLinkUrl, type IgAccountRef } from './line-cross-link.js';
@@ -110,11 +110,14 @@ export async function triggerGateForComment(
           : [];
     const scopeMatches = targets.length === 0 || targets.includes(args.postId);
     if (!scopeMatches) continue;
+    const triggerKeywords = parseGateTriggerKeywords(gate);
+    const normalizedComment = args.commentText.toLocaleLowerCase();
     const keywordMatches =
-      !gate.trigger_keyword || args.commentText.includes(gate.trigger_keyword);
+      triggerKeywords.length === 0 ||
+      triggerKeywords.some((keyword) => normalizedComment.includes(keyword.toLocaleLowerCase()));
     if (!keywordMatches) continue;
     const scopeScore = targets.length > 0 ? 2 : 0;
-    const keywordScore = gate.trigger_keyword ? 1 : 0;
+    const keywordScore = triggerKeywords.length > 0 ? 1 : 0;
     candidates.push({ gate, score: scopeScore + keywordScore });
   }
   candidates.sort((a, b) =>

@@ -14,10 +14,66 @@ import {
   getMediaPostById,
   getMediaPostByCampaignGateId,
   attachCampaignToMediaPost,
+  parseGateTriggerKeywords,
+  type EngagementGate,
 } from '@ig-harness/db';
 import { resolveAccount } from '../lib/accounts.js';
 
 const engagementGates = new Hono<Env>();
+
+const MAX_COMMENT_TRIGGER_KEYWORDS = 10;
+const MAX_COMMENT_TRIGGER_KEYWORD_LENGTH = 100;
+
+export function normalizeCommentTriggerKeywords(
+  input: unknown,
+  legacyKeyword?: unknown,
+): { keywords: string[]; error: string | null } {
+  const source = input === undefined
+    ? typeof legacyKeyword === 'string' && legacyKeyword.trim()
+      ? [legacyKeyword]
+      : []
+    : input === null
+      ? []
+      : input;
+  if (!Array.isArray(source)) {
+    return { keywords: [], error: 'trigger_keywords must be an array of strings' };
+  }
+  if (source.length > MAX_COMMENT_TRIGGER_KEYWORDS) {
+    return {
+      keywords: [],
+      error: `trigger_keywords supports up to ${MAX_COMMENT_TRIGGER_KEYWORDS} items`,
+    };
+  }
+
+  const keywords: string[] = [];
+  const seen = new Set<string>();
+  for (const value of source) {
+    if (typeof value !== 'string') {
+      return { keywords: [], error: 'trigger_keywords must contain only strings' };
+    }
+    const keyword = value.trim();
+    if (!keyword) continue;
+    if (keyword.length > MAX_COMMENT_TRIGGER_KEYWORD_LENGTH) {
+      return {
+        keywords: [],
+        error: `each trigger keyword must be ${MAX_COMMENT_TRIGGER_KEYWORD_LENGTH} characters or fewer`,
+      };
+    }
+    const dedupeKey = keyword.toLocaleLowerCase();
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    keywords.push(keyword);
+  }
+  return { keywords, error: null };
+}
+
+function gateResponse(gate: EngagementGate) {
+  return {
+    ...gate,
+    trigger_keywords:
+      gate.trigger_type === 'comment_on_post' ? parseGateTriggerKeywords(gate) : [],
+  };
+}
 
 /**
  * GET /click/:gateId?u=<base64url-encoded destination>[&ig=<igsid>]
@@ -121,7 +177,7 @@ engagementGates.get('/api/engagement-gates', async (c) => {
   const account = await resolveAccount(c);
   if (!account) return c.json({ success: false, error: 'account not found' }, 404);
   const gates = await listEngagementGates(c.env.DB, { accountId: account.id });
-  return c.json({ success: true, data: gates });
+  return c.json({ success: true, data: gates.map(gateResponse) });
 });
 
 /**
@@ -159,6 +215,7 @@ engagementGates.post('/api/engagement-gates', async (c) => {
     trigger_type: 'comment_on_post' | 'dm_keyword' | 'story_mention';
     target_post_id?: string | null;
     trigger_keyword?: string | null;
+    trigger_keywords?: string[] | null;
     require_follow?: number;
     initial_dm_text?: string;
     initial_dm_button_label?: string;
@@ -192,6 +249,20 @@ engagementGates.post('/api/engagement-gates', async (c) => {
 
   if (!body.name || !body.trigger_type) {
     return c.json({ success: false, error: 'missing required fields: name, trigger_type' }, 400);
+  }
+
+  if (body.trigger_type !== 'comment_on_post' && body.trigger_keywords !== undefined) {
+    return c.json(
+      { success: false, error: 'trigger_keywords is only supported for comment campaigns' },
+      400,
+    );
+  }
+  const normalizedKeywords = normalizeCommentTriggerKeywords(
+    body.trigger_type === 'comment_on_post' ? body.trigger_keywords : undefined,
+    body.trigger_type === 'comment_on_post' ? body.trigger_keyword : undefined,
+  );
+  if (normalizedKeywords.error) {
+    return c.json({ success: false, error: normalizedKeywords.error }, 400);
   }
 
   let scheduledPost = null;
@@ -288,7 +359,14 @@ engagementGates.post('/api/engagement-gates', async (c) => {
       : body.status ?? 'active',
     trigger_type: body.trigger_type,
     target_post_id: legacyTargetPostId,
-    trigger_keyword: body.trigger_keyword ?? null,
+    trigger_keyword:
+      body.trigger_type === 'comment_on_post'
+        ? normalizedKeywords.keywords[0] ?? null
+        : body.trigger_keyword ?? null,
+    trigger_keywords:
+      body.trigger_type === 'comment_on_post' && normalizedKeywords.keywords.length > 0
+        ? JSON.stringify(normalizedKeywords.keywords)
+        : null,
     require_follow: body.require_follow ?? 1,
     initial_dm_text: body.initial_dm_text ?? '',
     initial_dm_button_label: body.initial_dm_button_label ?? '特典を受け取る',
@@ -327,7 +405,7 @@ engagementGates.post('/api/engagement-gates', async (c) => {
     }
   }
 
-  return c.json({ success: true, data: gate });
+  return c.json({ success: true, data: gateResponse(gate) });
 });
 
 engagementGates.get('/api/engagement-gates/:id', async (c) => {
@@ -335,7 +413,7 @@ engagementGates.get('/api/engagement-gates/:id', async (c) => {
   const gate = await getEngagementGate(c.env.DB, id);
   if (!gate) return c.json({ success: false, error: 'not found' }, 404);
   const analytics = await getGateAnalytics(c.env.DB, id);
-  return c.json({ success: true, data: { ...gate, analytics } });
+  return c.json({ success: true, data: { ...gateResponse(gate), analytics } });
 });
 
 engagementGates.patch('/api/engagement-gates/:id', async (c) => {
@@ -344,6 +422,31 @@ engagementGates.patch('/api/engagement-gates/:id', async (c) => {
 
   const existing = await getEngagementGate(c.env.DB, id);
   if (!existing) return c.json({ success: false, error: 'not found' }, 404);
+
+  const nextTriggerType =
+    typeof patch.trigger_type === 'string' ? patch.trigger_type : existing.trigger_type;
+  if ('trigger_keywords' in patch) {
+    if (nextTriggerType !== 'comment_on_post') {
+      return c.json(
+        { success: false, error: 'trigger_keywords is only supported for comment campaigns' },
+        400,
+      );
+    }
+    const normalized = normalizeCommentTriggerKeywords(patch.trigger_keywords);
+    if (normalized.error) return c.json({ success: false, error: normalized.error }, 400);
+    patch.trigger_keywords =
+      normalized.keywords.length > 0 ? JSON.stringify(normalized.keywords) : null;
+    patch.trigger_keyword = normalized.keywords[0] ?? null;
+  } else if ('trigger_keyword' in patch && nextTriggerType === 'comment_on_post') {
+    const normalized = normalizeCommentTriggerKeywords(undefined, patch.trigger_keyword);
+    if (normalized.error) return c.json({ success: false, error: normalized.error }, 400);
+    patch.trigger_keywords =
+      normalized.keywords.length > 0 ? JSON.stringify(normalized.keywords) : null;
+    patch.trigger_keyword = normalized.keywords[0] ?? null;
+  } else if (nextTriggerType !== 'comment_on_post' && existing.trigger_type === 'comment_on_post') {
+    patch.trigger_keywords = null;
+    if (nextTriggerType === 'story_mention') patch.trigger_keyword = null;
+  }
 
   // Until Instagram supplies a real media id, activating this gate would
   // make its empty target list apply to every post. Block that unsafe state.
@@ -437,7 +540,7 @@ engagementGates.patch('/api/engagement-gates/:id', async (c) => {
 
   await updateEngagementGate(c.env.DB, id, patch);
   const gate = await getEngagementGate(c.env.DB, id);
-  return c.json({ success: true, data: gate });
+  return c.json({ success: true, data: gate ? gateResponse(gate) : null });
 });
 
 engagementGates.delete('/api/engagement-gates/:id', async (c) => {

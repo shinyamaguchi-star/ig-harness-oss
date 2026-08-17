@@ -168,6 +168,67 @@ describe('triggerGateForComment', () => {
 
     expect(db.deliveries).toHaveLength(0);
   });
+
+  it('fires when any one of multiple comment keywords matches', async () => {
+    const db = createMockDb();
+    db.gates.push({
+      id: 'gate-multiple', status: 'active', trigger_type: 'comment_on_post',
+      target_post_id: 'post-1', trigger_keyword: '欲しい',
+      trigger_keywords: JSON.stringify(['欲しい', '希望', 'お願いします']),
+      require_follow: 1, initial_dm_text: 'x', initial_dm_button_label: 'x',
+      follow_reminder_dm_text: '', follow_reminder_button_label: '',
+      reward_dm_text: '', reward_url: null, max_loops: 0,
+    });
+
+    await triggerGateForComment(db, fakeIgClient as never, {
+      postId: 'post-1',
+      commentText: '特典を希望します',
+      follower: { id: 42, igsid: 'IGSID42' },
+    });
+
+    expect(db.deliveries).toHaveLength(1);
+    expect(fakeIgClient.sendGenericTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it('matches multiple comment keywords without distinguishing letter case', async () => {
+    const db = createMockDb();
+    db.gates.push({
+      id: 'gate-case', status: 'active', trigger_type: 'comment_on_post',
+      target_post_id: 'post-1', trigger_keyword: 'Present',
+      trigger_keywords: JSON.stringify(['Present', 'Gift']),
+      require_follow: 1, initial_dm_text: 'x', initial_dm_button_label: 'x',
+      follow_reminder_dm_text: '', follow_reminder_button_label: '',
+      reward_dm_text: '', reward_url: null, max_loops: 0,
+    });
+
+    await triggerGateForComment(db, fakeIgClient as never, {
+      postId: 'post-1',
+      commentText: 'GIFT please',
+      follower: { id: 42, igsid: 'IGSID42' },
+    });
+
+    expect(db.deliveries).toHaveLength(1);
+  });
+
+  it('does not fire when none of the multiple comment keywords match', async () => {
+    const db = createMockDb();
+    db.gates.push({
+      id: 'gate-no-match', status: 'active', trigger_type: 'comment_on_post',
+      target_post_id: 'post-1', trigger_keyword: '欲しい',
+      trigger_keywords: JSON.stringify(['欲しい', '希望', 'お願いします']),
+      require_follow: 1, initial_dm_text: 'x', initial_dm_button_label: 'x',
+      follow_reminder_dm_text: '', follow_reminder_button_label: '',
+      reward_dm_text: '', reward_url: null, max_loops: 0,
+    });
+
+    await triggerGateForComment(db, fakeIgClient as never, {
+      postId: 'post-1',
+      commentText: '普通の感想です',
+      follower: { id: 42, igsid: 'IGSID42' },
+    });
+
+    expect(db.deliveries).toHaveLength(0);
+  });
 });
 
 describe('logMessage integration', () => {
