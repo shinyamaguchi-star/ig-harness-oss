@@ -255,6 +255,7 @@ export async function runSetup(repoDir: string): Promise<void> {
         workerName: state.workerName,
         d1DatabaseId: state.d1DatabaseId,
         d1DatabaseName: state.d1DatabaseName,
+        r2BucketName: state.r2BucketName,
         accountId: state.accountId,
       },
       null,

@@ -14,6 +14,7 @@ interface DeployedState {
   workerName?: string;
   d1DatabaseId?: string;
   d1DatabaseName?: string;
+  r2BucketName?: string;
   accountId?: string;
 }
 
@@ -78,6 +79,7 @@ export async function runUpdate(repoDir: string): Promise<void> {
       repoDir,
       d1DatabaseId: deployedState.d1DatabaseId,
       d1DatabaseName: deployedState.d1DatabaseName,
+      r2BucketName: deployedState.r2BucketName ?? `${deployedState.workerName}-images`,
       workerName: deployedState.workerName,
       accountId: deployedState.accountId,
     });

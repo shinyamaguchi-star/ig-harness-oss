@@ -206,22 +206,57 @@ app.post('/data-deletion', async (c) => {
 });
 
 app.get('/data-deletion', (c) => {
-  const code = c.req.query('code');
-  return c.html(`<!DOCTYPE html><html><head><title>Data Deletion</title></head><body>
-<h1>Data Deletion Request</h1>
-<p>Confirmation code: ${code ?? 'N/A'}</p>
-<p>Your data has been scheduled for deletion.</p>
+  const contact = c.env.CONTACT_EMAIL?.trim();
+  const requestStep = contact
+    ? `Email the operator at <a href="mailto:${encodeURIComponent(contact)}?subject=Instagram%20Harness%20data%20deletion%20request">${contact}</a> with the subject “Instagram Harness data deletion request”. Include only the Instagram username and an approximate connection date so the account can be identified.`
+    : `Send a direct message containing <strong>DATA DELETE REQUEST</strong> to the Instagram professional account through which you interacted. The account operator will use that conversation to identify the Instagram-scoped record without asking for a password or access token.`;
+  return c.html(`<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>User Data Deletion - Instagram Harness</title>
+</head><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:760px;margin:40px auto;padding:0 20px;line-height:1.65;color:#222">
+<h1>User Data Deletion Instructions</h1>
+<p>This self-hosted Instagram Harness instance processes data only for Instagram professional accounts explicitly connected by the operator.</p>
+<h2>How to request deletion</h2>
+<ol>
+  <li>Remove this app from the connected Instagram account's <strong>Apps and websites</strong> settings to stop future access.</li>
+  <li>${requestStep}</li>
+  <li>Do <strong>not</strong> include an Instagram password, access token, App Secret, API key, or identity document.</li>
+</ol>
+<h2>What will be deleted</h2>
+<p>Data associated with the requesting account will be removed from the active Cloudflare storage used by this instance. This may include Instagram account identifiers, scoped sender identifiers, message and comment content, media metadata, automation records, and operational logs.</p>
+<h2>Timeframe</h2>
+<p>The operator will acknowledge a valid request and complete deletion from active storage within 30 days. Residual copies may remain in provider-managed backups until those backups expire under the provider's retention schedule.</p>
+<p><a href="/privacy-policy">Privacy Policy</a> · <a href="/terms-of-service">Terms of Service</a></p>
 </body></html>`);
 });
 
 // Privacy policy page (required for Meta app public mode)
 app.get('/privacy-policy', (c) => {
-  return c.html(`<!DOCTYPE html><html><head><title>Privacy Policy - Instagram Harness</title></head><body>
+  const contact = c.env.CONTACT_EMAIL?.trim();
+  const contactMethod = contact
+    ? contact
+    : 'Send a direct message containing “DATA DELETE REQUEST” to the Instagram professional account through which you interacted.';
+  return c.html(`<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy - Instagram Harness</title>
+</head><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:760px;margin:40px auto;padding:0 20px;line-height:1.65;color:#222">
 <h1>Privacy Policy</h1>
 <p>Instagram Harness is a self-hosted Instagram DM automation tool. Each user deploys their own instance.</p>
 <p>This instance processes Instagram messages and comments solely for the account owner's automation purposes.</p>
-<p>No data is shared with third parties. All data is stored in the account owner's Cloudflare D1 database.</p>
-<p>Contact: ${c.env.CONTACT_EMAIL ?? 'admin@example.com'}</p>
+<h2>Data processed</h2>
+<p>The instance may process Instagram professional account identifiers and profile information, Instagram-scoped sender identifiers, message and comment content, media metadata, automation configuration, delivery records, and operational logs.</p>
+<h2>Purpose and legal basis</h2>
+<p>Data is processed only to provide account management, messaging, comment management, publishing, automation, security, and troubleshooting requested by the connected account operator.</p>
+<h2>Storage and service providers</h2>
+<p>Active application data is stored in the operator's Cloudflare D1 and R2 resources. Meta provides the Instagram platform and sends authorized platform data to this instance. Data is not sold. It is disclosed only to service providers needed to operate the instance, when required by law, or at the operator's direction.</p>
+<h2>Retention and deletion</h2>
+<p>Data is retained while the Instagram account remains connected or as needed for the stated purposes. A valid deletion request will be completed from active storage within 30 days. See the <a href="/data-deletion">User Data Deletion Instructions</a>.</p>
+<h2>Security</h2>
+<p>Access tokens, App Secrets, and administrative API keys are treated as confidential credentials. Administrative access should be limited to authorized operators.</p>
+<h2>Contact</h2>
+<p>Contact: ${contactMethod}</p>
 </body></html>`);
 });
 
@@ -233,7 +268,7 @@ app.get('/terms-of-service', (c) => {
 <h2>1. Acceptable use</h2>
 <p>This instance only interacts with the Instagram account(s) the owner has explicitly connected. It must not be used to spam, harass, or impersonate other users.</p>
 <h2>2. Data handling</h2>
-<p>All conversation data, follower data, and webhook payloads are stored in the operator's Cloudflare D1 database and are not shared with third parties. See the <a href="/privacy-policy">Privacy Policy</a> for details.</p>
+<p>Conversation data, follower data, and webhook payloads may be stored in the operator's Cloudflare resources and processed by the service providers described in the <a href="/privacy-policy">Privacy Policy</a>.</p>
 <h2>3. No warranty</h2>
 <p>This software is provided "as is" without warranty of any kind. The operator is not liable for any service interruption, data loss, or Meta policy actions on the connected Instagram account.</p>
 <h2>4. Compliance with Meta Platform Terms</h2>
