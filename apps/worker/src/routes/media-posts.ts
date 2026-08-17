@@ -39,6 +39,9 @@ function serializeMediaPost(row: MediaPost) {
     publishedMediaId: row.published_media_id,
     attemptCount: row.attempt_count,
     error: row.error,
+    campaignGateId: row.campaign_gate_id,
+    campaignActivationStatus: row.campaign_activation_status,
+    campaignError: row.campaign_error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -198,6 +201,18 @@ mediaPosts.delete('/api/media-posts/:id', async (c) => {
       { success: false, error: `only scheduled posts can be canceled (status=${post.status})` },
       409,
     );
+  }
+  if (post.campaign_gate_id) {
+    // A canceled reservation must never leave its empty-target gate available
+    // for accidental activation as an all-post campaign.
+    await c.env.DB
+      .prepare(
+        `UPDATE engagement_gates
+         SET status = 'archived', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now'))
+         WHERE id = ? AND status = 'paused'`,
+      )
+      .bind(post.campaign_gate_id)
+      .run();
   }
   return c.json({ success: true, data: null });
 });

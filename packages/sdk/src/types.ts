@@ -603,6 +603,9 @@ export interface CreateEngagementGateInput {
   line_connection_id?: string | null
   line_pool_slug?: string | null
   target_post_ids?: string[]
+  /** Local media post id. The gate stays paused until Instagram publishes
+   * the post and returns the real media id. */
+  scheduled_media_post_id?: string
 }
 
 export interface UpdateEngagementGateInput {
@@ -839,6 +842,9 @@ export interface MediaPost {
   publishedMediaId: string | null
   attemptCount: number
   error: string | null
+  campaignGateId: string | null
+  campaignActivationStatus: 'pending' | 'active' | 'failed' | 'canceled' | null
+  campaignError: string | null
   createdAt: string
   updatedAt: string
 }

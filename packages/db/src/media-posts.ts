@@ -2,6 +2,7 @@ import { jstNow } from './utils.js';
 
 export type MediaPostType = 'feed_image' | 'carousel' | 'reel' | 'story';
 export type MediaPostStatus = 'scheduled' | 'processing' | 'published' | 'failed' | 'canceled';
+export type CampaignActivationStatus = 'pending' | 'active' | 'failed' | 'canceled';
 
 export interface MediaPostMediaItem {
   url: string;
@@ -23,6 +24,10 @@ export interface MediaPost {
   published_media_id: string | null;
   attempt_count: number;
   error: string | null;
+  /** Engagement gate prepared while this post was still unpublished. */
+  campaign_gate_id: string | null;
+  campaign_activation_status: CampaignActivationStatus | null;
+  campaign_error: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -137,6 +142,9 @@ export type UpdateMediaPostInput = Partial<
     | 'attempt_count'
     | 'error'
     | 'scheduled_at'
+    | 'campaign_gate_id'
+    | 'campaign_activation_status'
+    | 'campaign_error'
   >
 >;
 
@@ -155,6 +163,9 @@ export async function updateMediaPost(
     'attempt_count',
     'error',
     'scheduled_at',
+    'campaign_gate_id',
+    'campaign_activation_status',
+    'campaign_error',
   ] as const) {
     if (updates[key] !== undefined) {
       fields.push(`${key} = ?`);
@@ -173,10 +184,76 @@ export async function updateMediaPost(
   return getMediaPostById(db, id);
 }
 
+/**
+ * Attach one gate to an unpublished media post. The gate itself must be
+ * created paused: an active comment gate with no real IG media id would be
+ * interpreted as an unsafe "all posts" campaign.
+ */
+export async function attachCampaignToMediaPost(
+  db: D1Database,
+  postId: string,
+  gateId: string,
+  activationStatus: CampaignActivationStatus = 'pending',
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE media_posts
+       SET campaign_gate_id = ?, campaign_activation_status = ?,
+           campaign_error = NULL, updated_at = ?
+       WHERE id = ?
+         AND campaign_gate_id IS NULL
+         AND status NOT IN ('failed', 'canceled')`,
+    )
+    .bind(gateId, activationStatus, jstNow(), postId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function getMediaPostByCampaignGateId(
+  db: D1Database,
+  gateId: string,
+): Promise<MediaPost | null> {
+  return db
+    .prepare(`SELECT * FROM media_posts WHERE campaign_gate_id = ?`)
+    .bind(gateId)
+    .first<MediaPost>();
+}
+
+/** Published posts whose linked campaign still needs its real IG media id. */
+export async function getPendingCampaignMediaPosts(
+  db: D1Database,
+  accountId: string,
+): Promise<MediaPost[]> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM media_posts
+       WHERE account_id = ?
+         AND status = 'published'
+         AND published_media_id IS NOT NULL
+         AND campaign_gate_id IS NOT NULL
+         AND COALESCE(campaign_activation_status, 'pending') != 'active'
+         AND COALESCE(campaign_activation_status, 'pending') != 'canceled'
+       ORDER BY updated_at ASC`,
+    )
+    .bind(accountId)
+    .all<MediaPost>();
+  return result.results;
+}
+
 export async function cancelMediaPost(db: D1Database, id: string): Promise<boolean> {
   const result = await db
     .prepare(
-      `UPDATE media_posts SET status = 'canceled', updated_at = ?
+      `UPDATE media_posts
+       SET status = 'canceled',
+           campaign_activation_status = CASE
+             WHEN campaign_gate_id IS NOT NULL THEN 'canceled'
+             ELSE campaign_activation_status
+           END,
+           campaign_error = CASE
+             WHEN campaign_gate_id IS NOT NULL THEN '予約投稿がキャンセルされました'
+             ELSE campaign_error
+           END,
+           updated_at = ?
        WHERE id = ? AND status = 'scheduled'`,
     )
     .bind(jstNow(), id)

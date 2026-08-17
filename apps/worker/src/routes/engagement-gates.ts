@@ -11,6 +11,9 @@ import {
   getRichMessage,
   hasCheckFollowPostback,
   setGateTargetPosts,
+  getMediaPostById,
+  getMediaPostByCampaignGateId,
+  attachCampaignToMediaPost,
 } from '@ig-harness/db';
 import { resolveAccount } from '../lib/accounts.js';
 
@@ -182,10 +185,42 @@ engagementGates.post('/api/engagement-gates', async (c) => {
     /** New preferred way: N target posts. Empty = all posts. Takes precedence
      *  over legacy target_post_id when present. */
     target_post_ids?: string[];
+    /** Local scheduled post id. The gate stays paused until that post is
+     * published and receives a real Instagram media id. */
+    scheduled_media_post_id?: string;
   }>();
 
   if (!body.name || !body.trigger_type) {
     return c.json({ success: false, error: 'missing required fields: name, trigger_type' }, 400);
+  }
+
+  let scheduledPost = null;
+  if (body.scheduled_media_post_id) {
+    scheduledPost = await getMediaPostById(c.env.DB, body.scheduled_media_post_id);
+    if (!scheduledPost || scheduledPost.account_id !== account.id) {
+      return c.json({ success: false, error: 'scheduled media post not found for this account' }, 404);
+    }
+    if (body.trigger_type !== 'comment_on_post') {
+      return c.json({ success: false, error: 'scheduled media posts only support comment campaigns' }, 400);
+    }
+    if (scheduledPost.post_type === 'story') {
+      return c.json({ success: false, error: 'story posts cannot use a comment campaign' }, 400);
+    }
+    if (scheduledPost.campaign_gate_id) {
+      return c.json({ success: false, error: 'this scheduled post already has a campaign' }, 409);
+    }
+    if (scheduledPost.status === 'failed' || scheduledPost.status === 'canceled') {
+      return c.json(
+        { success: false, error: `cannot attach a campaign to a ${scheduledPost.status} post` },
+        409,
+      );
+    }
+    if (scheduledPost.status === 'published' && !scheduledPost.published_media_id) {
+      return c.json(
+        { success: false, error: 'published post is missing its Instagram media id' },
+        409,
+      );
+    }
   }
 
   // Legacy text fields are only required when the corresponding rich-message
@@ -231,7 +266,11 @@ engagementGates.post('/api/engagement-gates', async (c) => {
 
   // Normalize: junction array wins when provided. The legacy single-post
   // column stays in sync for back-compat (holds the first id, or null).
-  const targetIds = Array.isArray(body.target_post_ids)
+  const targetIds = scheduledPost?.published_media_id
+    ? [scheduledPost.published_media_id]
+    : scheduledPost
+      ? []
+      : Array.isArray(body.target_post_ids)
     ? body.target_post_ids.filter((x) => typeof x === 'string' && x.length > 0)
     : body.target_post_id
       ? [body.target_post_id]
@@ -240,7 +279,13 @@ engagementGates.post('/api/engagement-gates', async (c) => {
 
   const gate = await createEngagementGate(c.env.DB, {
     name: body.name,
-    status: body.status ?? 'active',
+    // Empty target ids mean "all posts" to the webhook matcher. A campaign
+    // waiting for a scheduled post must therefore remain paused.
+    status: scheduledPost
+      ? scheduledPost.published_media_id
+        ? 'active'
+        : 'paused'
+      : body.status ?? 'active',
     trigger_type: body.trigger_type,
     target_post_id: legacyTargetPostId,
     trigger_keyword: body.trigger_keyword ?? null,
@@ -268,6 +313,20 @@ engagementGates.post('/api/engagement-gates', async (c) => {
   await setGateTargetPosts(c.env.DB, gate.id, targetIds);
   gate.target_post_ids = targetIds;
 
+  if (scheduledPost) {
+    const activationStatus = scheduledPost.published_media_id ? 'active' : 'pending';
+    const attached = await attachCampaignToMediaPost(
+      c.env.DB,
+      scheduledPost.id,
+      gate.id,
+      activationStatus,
+    );
+    if (!attached) {
+      await deleteEngagementGate(c.env.DB, gate.id);
+      return c.json({ success: false, error: 'scheduled post campaign attachment conflicted; retry' }, 409);
+    }
+  }
+
   return c.json({ success: true, data: gate });
 });
 
@@ -285,6 +344,22 @@ engagementGates.patch('/api/engagement-gates/:id', async (c) => {
 
   const existing = await getEngagementGate(c.env.DB, id);
   if (!existing) return c.json({ success: false, error: 'not found' }, 404);
+
+  // Until Instagram supplies a real media id, activating this gate would
+  // make its empty target list apply to every post. Block that unsafe state.
+  if (patch.status === 'active') {
+    const linkedPost = await getMediaPostByCampaignGateId(c.env.DB, id);
+    if (
+      linkedPost &&
+      linkedPost.campaign_activation_status !== 'active' &&
+      !linkedPost.published_media_id
+    ) {
+      return c.json(
+        { success: false, error: 'このキャンペーンは予約投稿の公開後に自動で有効になります' },
+        409,
+      );
+    }
+  }
 
   // Invalidate the cached tracked-link id when any of the three fields
   // that bake into the tracked link change: connection, pool, or reward_url.

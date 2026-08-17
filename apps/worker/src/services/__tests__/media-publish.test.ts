@@ -10,7 +10,11 @@ vi.mock('@ig-harness/db', async (importOriginal) => {
     ...original,
     getDueMediaPosts: vi.fn().mockResolvedValue([]),
     getProcessingMediaPosts: vi.fn().mockResolvedValue([]),
+    getPendingCampaignMediaPosts: vi.fn().mockResolvedValue([]),
     getMediaPostById: vi.fn().mockResolvedValue(null),
+    getEngagementGate: vi.fn().mockResolvedValue(null),
+    setGateTargetPosts: vi.fn().mockResolvedValue(undefined),
+    updateEngagementGate: vi.fn().mockResolvedValue(undefined),
     updateMediaPost: vi.fn().mockResolvedValue(null),
   };
 });
@@ -18,7 +22,11 @@ vi.mock('@ig-harness/db', async (importOriginal) => {
 import {
   getDueMediaPosts,
   getProcessingMediaPosts,
+  getPendingCampaignMediaPosts,
   getMediaPostById,
+  getEngagementGate,
+  setGateTargetPosts,
+  updateEngagementGate,
   updateMediaPost,
 } from '@ig-harness/db';
 import { processMediaPosts, kickImmediate } from '../media-publish.js';
@@ -39,6 +47,9 @@ function makePost(overrides: Record<string, unknown> = {}) {
     published_media_id: null,
     attempt_count: 0,
     error: null,
+    campaign_gate_id: null,
+    campaign_activation_status: null,
+    campaign_error: null,
     created_at: '',
     updated_at: '',
     ...overrides,
@@ -57,6 +68,11 @@ function makeClient(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getPendingCampaignMediaPosts).mockResolvedValue([]);
+  vi.mocked(getEngagementGate).mockResolvedValue(null);
+  vi.mocked(setGateTargetPosts).mockResolvedValue(undefined);
+  vi.mocked(updateEngagementGate).mockResolvedValue(undefined);
+  vi.mocked(updateMediaPost).mockResolvedValue(null);
 });
 
 describe('processMediaPosts — scheduled posts', () => {
@@ -180,6 +196,68 @@ describe('processMediaPosts — processing posts', () => {
       'post-1',
       expect.objectContaining({ status: 'published', published_media_id: 'media-99' }),
     );
+  });
+
+  it('activates a linked campaign with the real Instagram media id after publish', async () => {
+    const processing = makePost({
+      status: 'processing',
+      creation_id: 'container-1',
+      campaign_gate_id: 'gate-1',
+      campaign_activation_status: 'pending',
+    });
+    const published = makePost({
+      ...processing,
+      status: 'published',
+      published_media_id: 'media-99',
+    });
+    vi.mocked(getProcessingMediaPosts).mockResolvedValueOnce([processing] as any);
+    vi.mocked(updateMediaPost)
+      .mockResolvedValueOnce(published as any)
+      .mockResolvedValueOnce({ ...published, campaign_activation_status: 'active' } as any);
+    vi.mocked(getEngagementGate).mockResolvedValueOnce({
+      id: 'gate-1',
+      status: 'paused',
+    } as any);
+
+    await processMediaPosts(db, makeClient(), 'acc-1');
+
+    expect(setGateTargetPosts).toHaveBeenCalledWith(db, 'gate-1', ['media-99']);
+    expect(updateEngagementGate).toHaveBeenCalledWith(
+      db,
+      'gate-1',
+      expect.objectContaining({ target_post_id: 'media-99', status: 'active' }),
+    );
+    expect(updateMediaPost).toHaveBeenCalledWith(
+      db,
+      'post-1',
+      expect.objectContaining({ campaign_activation_status: 'active' }),
+    );
+  });
+
+  it('keeps an already-published post published when campaign activation fails', async () => {
+    const processing = makePost({
+      status: 'processing',
+      creation_id: 'container-1',
+      campaign_gate_id: 'gate-1',
+      campaign_activation_status: 'pending',
+    });
+    const published = makePost({
+      ...processing,
+      status: 'published',
+      published_media_id: 'media-99',
+    });
+    vi.mocked(getProcessingMediaPosts).mockResolvedValueOnce([processing] as any);
+    vi.mocked(updateMediaPost).mockResolvedValueOnce(published as any).mockResolvedValue(null);
+    vi.mocked(getEngagementGate).mockResolvedValueOnce({ id: 'gate-1', status: 'paused' } as any);
+    vi.mocked(setGateTargetPosts).mockRejectedValueOnce(new Error('temporary D1 error'));
+
+    await processMediaPosts(db, makeClient(), 'acc-1');
+
+    const calls = vi.mocked(updateMediaPost).mock.calls.map((call) => call[2] as any);
+    expect(calls).toContainEqual(
+      expect.objectContaining({ campaign_activation_status: 'failed' }),
+    );
+    expect(calls.some((patch) => patch.status === 'failed')).toBe(false);
   });
 
   it('IN_PROGRESS container is left untouched for the next cycle', async () => {

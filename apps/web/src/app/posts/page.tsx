@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   mediaPostsApi,
   type MediaPostApi,
@@ -44,9 +45,11 @@ function pickerHintForType(postType: MediaPostType): string {
 }
 
 export default function PostsPage() {
+  const router = useRouter()
   const [posts, setPosts] = useState<MediaPostApi[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [quota, setQuota] = useState<{ quotaUsage: number; quotaTotal: number } | null>(null)
 
   // form state
@@ -56,6 +59,7 @@ export default function PostsPage() {
   const [caption, setCaption] = useState('')
   const [mode, setMode] = useState<'now' | 'schedule'>('now')
   const [scheduledAt, setScheduledAt] = useState('')
+  const [configureCampaign, setConfigureCampaign] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
@@ -80,6 +84,15 @@ export default function PostsPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('campaign_linked') === '1') {
+      setNotice('予約投稿と自動応答を保存しました。投稿が公開されると自動応答も稼働します。')
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
 
   const handleFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -111,16 +124,21 @@ export default function PostsPage() {
     }
     setSubmitting(true)
     try {
-      await mediaPostsApi.create({
+      const post = await mediaPostsApi.create({
         postType,
         media: mediaItems,
         caption: caption || undefined,
         scheduledAt: mode === 'schedule' ? new Date(scheduledAt).toISOString() : undefined,
       })
+      if (mode === 'schedule' && configureCampaign) {
+        router.push(`/campaigns/new?scheduled_post_id=${encodeURIComponent(post.id)}`)
+        return
+      }
       setMediaItems([])
       setCaption('')
       setScheduledAt('')
       setMode('now')
+      setConfigureCampaign(false)
       await load()
     } catch (err) {
       setFormError(err instanceof Error ? err.message : '投稿の作成に失敗しました')
@@ -158,6 +176,11 @@ export default function PostsPage() {
             24時間の投稿枠: {quota.quotaUsage}/{quota.quotaTotal}
           </p>
         )}
+        {notice && (
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, border: '1px solid #A7F3D0', background: '#ECFDF5', color: '#047857', fontSize: 13 }}>
+            {notice}
+          </div>
+        )}
 
         {/* ─── 新規投稿フォーム ─── */}
         <section style={{ border: '1px solid #E5E7EB', borderRadius: 12, padding: 20, marginBottom: 32 }}>
@@ -170,6 +193,7 @@ export default function PostsPage() {
                 onClick={() => {
                   setPostType(t)
                   setMediaItems([])
+                  if (t === 'story') setConfigureCampaign(false)
                 }}
                 style={{
                   padding: '6px 14px',
@@ -263,7 +287,14 @@ export default function PostsPage() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 12 }}>
             <label style={{ fontSize: 14 }}>
-              <input type="radio" checked={mode === 'now'} onChange={() => setMode('now')} /> 今すぐ投稿
+              <input
+                type="radio"
+                checked={mode === 'now'}
+                onChange={() => {
+                  setMode('now')
+                  setConfigureCampaign(false)
+                }}
+              /> 今すぐ投稿
             </label>
             <label style={{ fontSize: 14 }}>
               <input type="radio" checked={mode === 'schedule'} onChange={() => setMode('schedule')} /> 日時指定
@@ -278,9 +309,41 @@ export default function PostsPage() {
             )}
           </div>
           {mode === 'schedule' && (
-            <p style={{ fontSize: 12, color: '#9CA3AF', marginTop: 4 }}>
-              ※ 公開は指定時刻から最大5分ずれます(5分毎のバッチ処理)
-            </p>
+            <>
+              <p style={{ fontSize: 12, color: '#9CA3AF', marginTop: 4 }}>
+                ※ 公開は指定時刻から最大5分ずれます(5分毎のバッチ処理)
+              </p>
+              {postType !== 'story' && (
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 8,
+                    marginTop: 14,
+                    padding: 12,
+                    border: `1px solid ${configureCampaign ? '#E1306C' : '#D1D5DB'}`,
+                    borderRadius: 10,
+                    background: configureCampaign ? '#FDF2F8' : '#FAFAFA',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={configureCampaign}
+                    onChange={(e) => setConfigureCampaign(e.target.checked)}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: '#374151' }}>
+                      続けてコメント自動応答を設定する
+                    </span>
+                    <span style={{ display: 'block', fontSize: 12, color: '#6B7280', marginTop: 2 }}>
+                      予約保存後にキャンペーン設定画面へ進みます。投稿が公開されるまでは自動応答は停止状態です。
+                    </span>
+                  </span>
+                </label>
+              )}
+            </>
           )}
 
           {formError && <p style={{ color: '#B91C1C', fontSize: 13, marginTop: 8 }}>{formError}</p>}
@@ -290,7 +353,13 @@ export default function PostsPage() {
             disabled={submitting || uploading}
             style={{ marginTop: 16, padding: '10px 24px', borderRadius: 8, border: 'none', background: '#E1306C', color: 'white', fontWeight: 600, cursor: 'pointer', opacity: submitting ? 0.6 : 1 }}
           >
-            {submitting ? '送信中…' : mode === 'now' ? '投稿する' : '予約する'}
+            {submitting
+              ? '送信中…'
+              : mode === 'now'
+                ? '投稿する'
+                : configureCampaign
+                  ? '予約して自動応答を設定'
+                  : '予約する'}
           </button>
         </section>
 
@@ -330,6 +399,29 @@ export default function PostsPage() {
                     </p>
                     {post.error && (
                       <p style={{ fontSize: 12, color: '#B91C1C', marginTop: 4 }}>{post.error}</p>
+                    )}
+                    {post.campaignGateId && (
+                      <p
+                        style={{
+                          fontSize: 12,
+                          color:
+                            post.campaignActivationStatus === 'active'
+                              ? '#047857'
+                              : post.campaignActivationStatus === 'failed'
+                                ? '#B91C1C'
+                                : '#A16207',
+                          marginTop: 4,
+                        }}
+                      >
+                        自動応答: {post.campaignActivationStatus === 'active'
+                          ? '稼働中'
+                          : post.campaignActivationStatus === 'failed'
+                            ? '開始失敗'
+                            : post.campaignActivationStatus === 'canceled'
+                              ? 'キャンセル済み'
+                              : '公開待ち'}
+                        {post.campaignError ? `（${post.campaignError}）` : ''}
+                      </p>
                     )}
                   </div>
                   {post.status === 'scheduled' && (

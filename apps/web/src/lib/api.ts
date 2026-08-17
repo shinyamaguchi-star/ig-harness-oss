@@ -508,6 +508,9 @@ export interface MediaPostApi {
   publishedMediaId: string | null
   attemptCount: number
   error: string | null
+  campaignGateId: string | null
+  campaignActivationStatus: 'pending' | 'active' | 'failed' | 'canceled' | null
+  campaignError: string | null
   createdAt: string
   updatedAt: string
 }
@@ -534,6 +537,11 @@ export const mediaPostsApi = {
       }),
     })
     if (!res.data) throw new Error(res.error || '投稿の作成に失敗しました')
+    return res.data
+  },
+  get: async (id: string): Promise<MediaPostApi> => {
+    const res = await fetchApi<ApiResponse<MediaPostApi>>(`/api/media-posts/${id}`)
+    if (!res.data) throw new Error(res.error || '予約投稿の取得に失敗しました')
     return res.data
   },
   cancel: async (id: string): Promise<void> => {
@@ -582,7 +590,9 @@ export const engagementGatesApi = {
     if (!res.data) throw new Error(res.error || 'Failed to fetch engagement gate')
     return res.data
   },
-  create: async (data: Partial<EngagementGate>): Promise<EngagementGate> => {
+  create: async (
+    data: Partial<EngagementGate> & { scheduled_media_post_id?: string },
+  ): Promise<EngagementGate> => {
     const res = await fetchApi<ApiResponse<EngagementGate>>('/api/engagement-gates', {
       method: 'POST',
       body: JSON.stringify(data),

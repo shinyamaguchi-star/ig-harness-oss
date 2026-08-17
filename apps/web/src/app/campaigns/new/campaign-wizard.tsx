@@ -6,12 +6,14 @@ import Link from 'next/link'
 import {
   engagementGatesApi,
   lineConnectionsApi,
+  mediaPostsApi,
   postsApi,
   richMessagesApi,
   type EngagementGate,
   type LineConnection,
   type LineHarnessPool,
   type MediaItem,
+  type MediaPostApi,
   type PostCoverage,
   type RichMessage,
   type RichMessageBlock,
@@ -176,6 +178,41 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
   /** Pools for the currently selected connection. Empty = no LINE-side
    *  traffic pools (or legacy LINE Harness without the pools feature). */
   const [linePools, setLinePools] = useState<LineHarnessPool[]>([])
+  /** When entered from the reservation screen, this local post is the only
+   * target. It does not have an Instagram media id until publication. */
+  const [scheduledPostId, setScheduledPostId] = useState('')
+  const [scheduledPost, setScheduledPost] = useState<MediaPostApi | null>(null)
+  const [scheduledPostLoading, setScheduledPostLoading] = useState(false)
+  const [scheduledPostError, setScheduledPostError] = useState('')
+
+  useEffect(() => {
+    if (existingGate || typeof window === 'undefined') return
+    const postId = new URLSearchParams(window.location.search).get('scheduled_post_id') ?? ''
+    if (!postId) return
+    setScheduledPostId(postId)
+    setScheduledPostLoading(true)
+    setScheduledPostError('')
+    mediaPostsApi
+      .get(postId)
+      .then((post) => {
+        setScheduledPost(post)
+        const when = new Date(post.scheduledAt)
+        const label = Number.isNaN(when.getTime())
+          ? '予約投稿'
+          : `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}-${String(when.getDate()).padStart(2, '0')} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
+        setS((x) => ({
+          ...x,
+          name: `予約投稿 自動返信 ${label}`,
+          triggerType: 'comment_on_post',
+          targetMediaIds: [],
+          targetMediaPreviews: {},
+        }))
+      })
+      .catch((err) => {
+        setScheduledPostError(err instanceof Error ? err.message : '予約投稿を読み込めませんでした')
+      })
+      .finally(() => setScheduledPostLoading(false))
+  }, [existingGate])
 
   // Load the existing rich-message library once so each slot's dropdown
   // can filter by kind. Cheap (≤200 rows) and only when the wizard mounts.
@@ -328,6 +365,10 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
   }
 
   const validate = (): string | null => {
+    if (scheduledPostId && scheduledPostLoading) return '予約投稿を確認中です。少し待ってからもう一度押してください'
+    if (scheduledPostId && (scheduledPostError || !scheduledPost)) {
+      return scheduledPostError || '連携する予約投稿を確認できませんでした'
+    }
     if (!s.name.trim()) return 'キャンペーン名を入力してください'
 
     if (s.triggerType === 'dm_keyword' && !s.keyword.trim()) {
@@ -501,16 +542,25 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
       setProgress(isEdit ? 'キャンペーンを更新中...' : 'キャンペーンを保存中...')
       const payload = {
         name: s.name,
-        trigger_type: s.triggerType,
+        trigger_type: scheduledPostId ? 'comment_on_post' : s.triggerType,
         // Junction array is the new source of truth. Only comment_on_post
         // campaigns can be scoped; DM/story triggers run account-wide.
-        target_post_ids: s.triggerType === 'comment_on_post' ? s.targetMediaIds : [],
+        target_post_ids:
+          scheduledPostId
+            ? []
+            : s.triggerType === 'comment_on_post'
+              ? s.targetMediaIds
+              : [],
         // Legacy column — keep the first id for back-compat with any
         // external tool still reading it.
         target_post_id:
-          s.triggerType === 'comment_on_post' && s.targetMediaIds.length > 0
+          !scheduledPostId && s.triggerType === 'comment_on_post' && s.targetMediaIds.length > 0
             ? s.targetMediaIds[0]!
             : null,
+        // The Worker forces this gate to paused until Instagram returns the
+        // real media id, then binds that id and activates it automatically.
+        status: scheduledPostId ? 'paused' : undefined,
+        scheduled_media_post_id: scheduledPostId || undefined,
         trigger_keyword:
           s.triggerType === 'story_mention' ? null : s.keyword.trim() || null,
         require_follow: s.requireFollow ? 1 : 0,
@@ -543,7 +593,7 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
         ? await engagementGatesApi.update(existingGate.id, payload)
         : await engagementGatesApi.create(payload)
       setProgress('完了')
-      router.push(`/campaigns/${gate.id}`)
+      router.push(scheduledPostId ? '/posts?campaign_linked=1' : `/campaigns/${gate.id}`)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'キャンペーン保存に失敗しました'
       setError(
@@ -569,16 +619,16 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
   return (
     <div>
       <Header
-        title={isEdit ? 'キャンペーン編集' : '新規キャンペーン'}
-        description={isEdit ? '保存するとすぐに新しい内容で運用されます' : 'リールにコメント → 自動DMで LINE 誘導するセットを1画面で作成'}
+        title={isEdit ? 'キャンペーン編集' : scheduledPostId ? '予約投稿の自動応答設定' : '新規キャンペーン'}
+        description={isEdit ? '保存するとすぐに新しい内容で運用されます' : scheduledPostId ? '公開後にこの投稿だけで自動応答を開始します' : 'リールにコメント → 自動DMで LINE 誘導するセットを1画面で作成'}
       />
 
       <div className="mb-4">
         <Link
-          href={isEdit && existingGate ? `/campaigns/${existingGate.id}` : '/campaigns'}
+          href={isEdit && existingGate ? `/campaigns/${existingGate.id}` : scheduledPostId ? '/posts' : '/campaigns'}
           className="text-sm text-gray-500 hover:text-gray-700"
         >
-          ← {isEdit ? 'キャンペーン詳細に戻る' : 'キャンペーン一覧に戻る'}
+          ← {isEdit ? 'キャンペーン詳細に戻る' : scheduledPostId ? '投稿一覧に戻る' : 'キャンペーン一覧に戻る'}
         </Link>
       </div>
 
@@ -601,8 +651,16 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
           <section className="bg-white rounded-xl border border-gray-200 p-5">
             <h2 className="text-sm font-semibold text-gray-900 mb-3">② 何に反応して発動する？</h2>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4">
-              {TRIGGER_OPTIONS.map((opt) => (
+            {scheduledPostId ? (
+              <div className="mb-4 rounded-lg border border-pink-200 bg-pink-50 px-3 py-3 text-xs text-gray-700">
+                <div className="font-semibold text-[#E1306C]">予約投稿のコメントに反応</div>
+                <div className="mt-1">
+                  投稿前は停止状態で保存され、Instagramでの公開成功後にこの投稿だけを対象として自動で稼働します。
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4">
+                {TRIGGER_OPTIONS.map((opt) => (
                 <button
                   key={opt.v}
                   type="button"
@@ -619,11 +677,42 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                   </div>
                   <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">{opt.help}</div>
                 </button>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
 
             {s.triggerType === 'comment_on_post' && (
               <>
+                {scheduledPostId ? (
+                  <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <div className="text-xs font-medium text-gray-700">連携する予約投稿</div>
+                    {scheduledPostLoading ? (
+                      <div className="mt-2 text-xs text-gray-500">読み込み中...</div>
+                    ) : scheduledPostError ? (
+                      <div className="mt-2 text-xs text-red-600">{scheduledPostError}</div>
+                    ) : scheduledPost ? (
+                      <div className="mt-2 flex items-center gap-3">
+                        <div className="h-14 w-14 shrink-0 overflow-hidden rounded bg-gray-200">
+                          {scheduledPost.media[0]?.type === 'image' ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={scheduledPost.media[0].url} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-xl">🎬</div>
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="line-clamp-1 text-xs text-gray-700">
+                            {scheduledPost.caption || 'キャプションなし'}
+                          </div>
+                          <div className="mt-1 text-[11px] text-gray-500">
+                            公開予定: {scheduledPost.scheduledAt}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <>
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-xs font-medium text-gray-700">
                     対象リール <span className="text-gray-400 font-normal">（空欄なら全投稿）</span>
@@ -693,6 +782,8 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                       <span className="text-gray-500">個別リール指定のキャンペーンを作ると、そちらが優先されるので今後も柔軟に上書き可能。</span>
                     </div>
                   </div>
+                )}
+                  </>
                 )}
 
                 <div className="mt-3 pt-3 border-t border-gray-100">
@@ -1155,7 +1246,7 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
       </div>
 
       <MediaPickerModal
-        open={mediaPickerOpen}
+        open={!scheduledPostId && mediaPickerOpen}
         onClose={() => setMediaPickerOpen(false)}
         productType="all"
         multiSelect

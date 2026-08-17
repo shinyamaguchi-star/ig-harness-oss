@@ -2,6 +2,10 @@ import {
   getDueMediaPosts,
   getProcessingMediaPosts,
   getMediaPostById,
+  getPendingCampaignMediaPosts,
+  getEngagementGate,
+  setGateTargetPosts,
+  updateEngagementGate,
   updateMediaPost,
   type MediaPost,
   type MediaPostMediaItem,
@@ -32,6 +36,12 @@ export async function processMediaPosts(
   const processing = await getProcessingMediaPosts(db, accountId);
   for (const post of processing) {
     await advancePost(db, igClient, post);
+  }
+  // Retry campaign activation independently from publishing. Instagram may
+  // already have accepted the post even if a later D1 write briefly failed.
+  const pendingCampaigns = await getPendingCampaignMediaPosts(db, accountId);
+  for (const post of pendingCampaigns) {
+    await activateLinkedCampaign(db, post);
   }
 }
 
@@ -138,18 +148,24 @@ async function advancePost(
   post: MediaPost,
 ): Promise<void> {
   if (!post.creation_id) {
-    await updateMediaPost(db, post.id, { status: 'failed', error: 'processing post without creation_id' });
+    await updateMediaPost(db, post.id, {
+      status: 'failed',
+      error: 'processing post without creation_id',
+      campaign_activation_status: post.campaign_gate_id ? 'failed' : undefined,
+      campaign_error: post.campaign_gate_id ? '投稿に失敗したため自動応答を開始できません' : undefined,
+    });
     return;
   }
   try {
     const status = await igClient.getContainerStatus(post.creation_id);
     if (status.status_code === 'FINISHED') {
       const result = await igClient.publishMedia(post.creation_id);
-      await updateMediaPost(db, post.id, {
+      const published = await updateMediaPost(db, post.id, {
         status: 'published',
         published_media_id: result.id,
         error: null,
       });
+      if (published?.campaign_gate_id) await activateLinkedCampaign(db, published);
     } else if (status.status_code === 'PUBLISHED') {
       // Container was already published (e.g., if the previous updateMediaPost write
       // failed or the worker was terminated after publishMedia succeeded). Recover
@@ -162,11 +178,43 @@ async function advancePost(
       await updateMediaPost(db, post.id, {
         status: 'failed',
         error: `container ${status.status_code}: ${status.status ?? ''}`.trim(),
+        campaign_activation_status: post.campaign_gate_id ? 'failed' : undefined,
+        campaign_error: post.campaign_gate_id ? '投稿に失敗したため自動応答を開始できません' : undefined,
       });
     }
     // IN_PROGRESS → leave for the next cron cycle (video encoding takes minutes).
   } catch (err) {
     await recordFailure(db, post, err);
+  }
+}
+
+/** Bind the real IG media id to the prepared gate, then make it active. */
+async function activateLinkedCampaign(db: D1Database, post: MediaPost): Promise<void> {
+  if (!post.campaign_gate_id || !post.published_media_id) return;
+  try {
+    const gate = await getEngagementGate(db, post.campaign_gate_id);
+    if (!gate) throw new Error('linked campaign not found');
+    if (gate.status === 'archived') {
+      await updateMediaPost(db, post.id, {
+        campaign_activation_status: 'canceled',
+        campaign_error: 'キャンペーンがアーカイブされているため開始しませんでした',
+      });
+      return;
+    }
+    await setGateTargetPosts(db, gate.id, [post.published_media_id]);
+    await updateEngagementGate(db, gate.id, {
+      target_post_id: post.published_media_id,
+      status: 'active',
+    });
+    await updateMediaPost(db, post.id, {
+      campaign_activation_status: 'active',
+      campaign_error: null,
+    });
+  } catch (err) {
+    await updateMediaPost(db, post.id, {
+      campaign_activation_status: 'failed',
+      campaign_error: `自動応答の有効化に失敗しました: ${String(err instanceof Error ? err.message : err)}`,
+    });
   }
 }
 
@@ -178,7 +226,13 @@ async function recordFailure(db: D1Database, post: MediaPost, err: unknown): Pro
   const attempts = post.attempt_count + 1;
   const message = describeError(err);
   if (attempts >= MAX_ATTEMPTS) {
-    await updateMediaPost(db, post.id, { status: 'failed', attempt_count: attempts, error: message });
+    await updateMediaPost(db, post.id, {
+      status: 'failed',
+      attempt_count: attempts,
+      error: message,
+      campaign_activation_status: post.campaign_gate_id ? 'failed' : undefined,
+      campaign_error: post.campaign_gate_id ? '投稿に失敗したため自動応答を開始できません' : undefined,
+    });
   } else {
     await updateMediaPost(db, post.id, { attempt_count: attempts, error: message });
   }
