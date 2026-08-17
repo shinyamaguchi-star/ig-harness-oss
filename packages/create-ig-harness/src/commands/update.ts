@@ -111,7 +111,20 @@ export async function runUpdate(repoDir: string): Promise<void> {
   }
 
   await wrangler(
-    ["pages", "deploy", "out", "--project-name", adminProjectName, "--commit-dirty=true"],
+    [
+      "pages",
+      "deploy",
+      "out",
+      "--project-name",
+      adminProjectName,
+      // `wrangler pages deploy` otherwise infers the current git branch.
+      // Feature branches become Preview deployments and leave the stable
+      // admin URL serving old code, which makes a successful update appear
+      // to have done nothing.
+      "--branch",
+      "main",
+      "--commit-dirty=true",
+    ],
     { cwd: webDir },
   );
   s.stop(`Admin UI 再デプロイ完了 (${adminProjectName})`);

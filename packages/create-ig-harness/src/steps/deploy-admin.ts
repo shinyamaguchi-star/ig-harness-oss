@@ -60,6 +60,10 @@ export async function deployAdmin(
         "out",
         "--project-name",
         options.projectName,
+        // Setup/update is an explicit production deployment. Do not let
+        // Wrangler infer a feature branch and publish only a Preview build.
+        "--branch",
+        "main",
         "--commit-dirty=true",
       ],
       { cwd: webDir },
