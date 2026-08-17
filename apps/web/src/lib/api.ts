@@ -616,6 +616,14 @@ export const engagementGatesApi = {
     if (!res.data) throw new Error(res.error || 'Failed to update engagement gate')
     return res.data
   },
+  duplicate: async (id: string): Promise<EngagementGate> => {
+    const res = await fetchApi<ApiResponse<EngagementGate>>(
+      `/api/engagement-gates/${id}/duplicate`,
+      { method: 'POST' },
+    )
+    if (!res.data) throw new Error(res.error || 'キャンペーンのコピーに失敗しました')
+    return res.data
+  },
   delete: async (id: string): Promise<void> => {
     await fetchApi<ApiResponse<null>>(`/api/engagement-gates/${id}`, { method: 'DELETE' })
   },

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import {
   engagementGatesApi,
   postsApi,
@@ -31,10 +32,12 @@ const STATUS_CLASSES: Record<EngagementGate['status'], string> = {
 }
 
 export default function CampaignsPage() {
+  const router = useRouter()
   const [gates, setGates] = useState<EngagementGate[]>([])
   const [mediaById, setMediaById] = useState<Record<string, MediaItem>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [duplicatingId, setDuplicatingId] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -60,6 +63,23 @@ export default function CampaignsPage() {
   useEffect(() => {
     load()
   }, [load])
+
+  const duplicateCampaign = async (gate: EngagementGate) => {
+    if (
+      !window.confirm(
+        `「${gate.name}」をコピーしますか？\n\nコピーは安全のため停止中で作成されます。内容を確認してから有効にしてください。`,
+      )
+    ) return
+    setDuplicatingId(gate.id)
+    setError('')
+    try {
+      const copied = await engagementGatesApi.duplicate(gate.id)
+      router.push(`/campaigns/${copied.id}/edit?copied=1`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'キャンペーンのコピーに失敗しました')
+      setDuplicatingId('')
+    }
+  }
 
   // Precompute a post→attached-gates index so we can show a "適用中の
   // 投稿" summary at the top (dedupe when one post is covered by
@@ -132,7 +152,13 @@ export default function CampaignsPage() {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {gates.map((g) => (
-            <CampaignCard key={g.id} gate={g} mediaById={mediaById} />
+            <CampaignCard
+              key={g.id}
+              gate={g}
+              mediaById={mediaById}
+              duplicating={duplicatingId === g.id}
+              onDuplicate={() => void duplicateCampaign(g)}
+            />
           ))}
         </div>
       )}
@@ -143,9 +169,13 @@ export default function CampaignsPage() {
 function CampaignCard({
   gate,
   mediaById,
+  duplicating,
+  onDuplicate,
 }: {
   gate: EngagementGate
   mediaById: Record<string, MediaItem>
+  duplicating: boolean
+  onDuplicate: () => void
 }) {
   const trigger = TRIGGER_LABELS[gate.trigger_type] ?? { emoji: '⚡', label: gate.trigger_type }
   const targets = gate.target_post_ids ?? (gate.target_post_id ? [gate.target_post_id] : [])
@@ -189,6 +219,14 @@ function CampaignCard({
             </div>
           </div>
           <div className="shrink-0 flex gap-1">
+            <button
+              type="button"
+              onClick={onDuplicate}
+              disabled={duplicating}
+              className="px-2 py-1 rounded text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50"
+            >
+              {duplicating ? 'コピー中…' : 'コピー'}
+            </button>
             <Link
               href={`/campaigns/${gate.id}`}
               className="px-2 py-1 rounded text-xs font-medium text-gray-600 hover:bg-gray-100"

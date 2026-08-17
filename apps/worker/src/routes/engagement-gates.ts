@@ -18,6 +18,7 @@ import {
   type EngagementGate,
 } from '@ig-harness/db';
 import { resolveAccount } from '../lib/accounts.js';
+import { copyEngagementGate } from '../services/campaign-copy.js';
 
 const engagementGates = new Hono<Env>();
 
@@ -406,6 +407,31 @@ engagementGates.post('/api/engagement-gates', async (c) => {
   }
 
   return c.json({ success: true, data: gateResponse(gate) });
+});
+
+engagementGates.post('/api/engagement-gates/:id/duplicate', async (c) => {
+  const account = await resolveAccount(c);
+  if (!account) return c.json({ success: false, error: 'account not found' }, 404);
+
+  // Use the account-scoped list instead of an unscoped id lookup so an API
+  // key can never copy another connected account's campaign by guessing id.
+  const accountGates = await listEngagementGates(c.env.DB, { accountId: account.id });
+  const source = accountGates.find((gate) => gate.id === c.req.param('id'));
+  if (!source) return c.json({ success: false, error: 'campaign not found' }, 404);
+
+  try {
+    const copied = await copyEngagementGate(c.env.DB, source, account.id);
+    return c.json({ success: true, data: gateResponse(copied) }, 201);
+  } catch (error) {
+    console.error('[campaign-copy] failed:', error);
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'campaign copy failed',
+      },
+      500,
+    );
+  }
 });
 
 engagementGates.get('/api/engagement-gates/:id', async (c) => {

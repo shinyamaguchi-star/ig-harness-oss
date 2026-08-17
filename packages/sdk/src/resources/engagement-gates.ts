@@ -36,6 +36,15 @@ export class EngagementGatesResource {
     return res.data
   }
 
+  /** Create an independent paused copy, including cloned rich-message templates. */
+  async duplicate(id: string): Promise<EngagementGate> {
+    const res = await this.http.post<ApiResponse<EngagementGate>>(
+      `/api/engagement-gates/${id}/duplicate`,
+      {},
+    )
+    return res.data
+  }
+
   async delete(id: string): Promise<void> {
     await this.http.delete(`/api/engagement-gates/${id}`)
   }

@@ -161,6 +161,24 @@ export default function CampaignDetailClient() {
     }
   }
 
+  const handleDuplicate = async () => {
+    if (!gate) return
+    if (
+      !confirm(
+        `「${gate.name}」をコピーしますか？\n\nコピーは安全のため停止中で作成されます。内容を確認してから有効にしてください。`,
+      )
+    ) return
+    setBusy(true)
+    setError('')
+    try {
+      const copied = await engagementGatesApi.duplicate(gate.id)
+      router.push(`/campaigns/${copied.id}/edit?copied=1`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'キャンペーンのコピーに失敗しました')
+      setBusy(false)
+    }
+  }
+
   if (loading) {
     return (
       <div>
@@ -252,6 +270,13 @@ export default function CampaignDetailClient() {
             >
               編集
             </Link>
+            <button
+              onClick={handleDuplicate}
+              disabled={busy}
+              className="px-4 py-2 min-h-[40px] text-sm font-medium text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-lg disabled:opacity-50"
+            >
+              コピー
+            </button>
             <button
               onClick={handleToggleStatus}
               disabled={busy}

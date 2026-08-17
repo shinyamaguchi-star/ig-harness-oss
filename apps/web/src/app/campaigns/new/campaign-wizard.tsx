@@ -203,6 +203,12 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
   const [scheduledPost, setScheduledPost] = useState<MediaPostApi | null>(null)
   const [scheduledPostLoading, setScheduledPostLoading] = useState(false)
   const [scheduledPostError, setScheduledPostError] = useState('')
+  const [showCopyNotice, setShowCopyNotice] = useState(false)
+
+  useEffect(() => {
+    if (!existingGate || typeof window === 'undefined') return
+    setShowCopyNotice(new URLSearchParams(window.location.search).get('copied') === '1')
+  }, [existingGate])
 
   useEffect(() => {
     if (existingGate || typeof window === 'undefined') return
@@ -649,6 +655,12 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
         title={isEdit ? 'キャンペーン編集' : scheduledPostId ? '予約投稿の自動応答設定' : '新規キャンペーン'}
         description={isEdit ? '保存するとすぐに新しい内容で運用されます' : scheduledPostId ? '公開後にこの投稿だけで自動応答を開始します' : 'リールにコメント → 自動DMで LINE 誘導するセットを1画面で作成'}
       />
+
+      {showCopyNotice && (
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          キャンペーンを停止中でコピーしました。名前・対象投稿・キーワード・DM内容を確認して保存し、詳細画面で「再開」を押すと稼働します。
+        </div>
+      )}
 
       <div className="mb-4">
         <Link
