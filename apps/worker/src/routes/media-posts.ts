@@ -5,9 +5,12 @@ import {
   getMediaPostById,
   cancelMediaPost,
   updateMediaPost,
+  updateScheduledMediaPost,
   jstNow,
   toJstString,
   getIgAccountById,
+  getEngagementGate,
+  type EngagementGate,
   type MediaPost,
   type MediaPostMediaItem,
   type MediaPostStatus,
@@ -44,6 +47,7 @@ function serializeMediaPost(row: MediaPost) {
     campaignGateId: row.campaign_gate_id,
     campaignActivationStatus: row.campaign_activation_status,
     campaignError: row.campaign_error,
+    campaignAutoActivate: row.campaign_auto_activate === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -134,6 +138,33 @@ export function normalizeScheduledAt(input: string): string | null {
 
 const mediaPosts = new Hono<Env>();
 
+async function validateCampaignForScheduledPost(
+  db: D1Database,
+  accountId: string,
+  gateId: string,
+  postType: MediaPostType,
+): Promise<{ gate: EngagementGate | null; error: string | null }> {
+  const gate = await getEngagementGate(db, gateId);
+  if (!gate || gate.account_id !== accountId) {
+    return { gate: null, error: 'campaign not found for this account' };
+  }
+  if (gate.status === 'archived') {
+    return { gate: null, error: 'archived campaigns cannot be linked' };
+  }
+  if (gate.trigger_type !== 'comment_on_post') {
+    return { gate: null, error: 'only comment campaigns can be linked to scheduled posts' };
+  }
+  if (postType === 'story') {
+    return { gate: null, error: 'story posts cannot use a comment campaign' };
+  }
+  // An active campaign with no targets is intentionally an all-post default.
+  // Attaching one reservation would silently narrow it after publish.
+  if (gate.status === 'active' && (gate.target_post_ids?.length ?? 0) === 0) {
+    return { gate: null, error: 'all-post default campaigns do not need an individual post link' };
+  }
+  return { gate, error: null };
+}
+
 // NOTE: register before /:id so "publishing-limit" is not captured as an id.
 mediaPosts.get('/api/media-posts/publishing-limit', async (c) => {
   const account = await resolveAccount(c);
@@ -163,6 +194,7 @@ mediaPosts.post('/api/media-posts', async (c) => {
     cover_url?: string | null;
     thumb_offset_ms?: number | null;
     scheduled_at?: string;
+    campaign_gate_id?: string | null;
   };
   try {
     body = await c.req.json();
@@ -186,6 +218,18 @@ mediaPosts.post('/api/media-posts', async (c) => {
   }
 
   const immediate = !body.scheduled_at;
+  if (immediate && body.campaign_gate_id) {
+    return c.json({ success: false, error: 'campaigns can only be linked to scheduled posts' }, 400);
+  }
+  if (body.campaign_gate_id) {
+    const checked = await validateCampaignForScheduledPost(
+      c.env.DB,
+      account.id,
+      body.campaign_gate_id,
+      body.post_type as MediaPostType,
+    );
+    if (checked.error) return c.json({ success: false, error: checked.error }, 400);
+  }
   const post = await createMediaPost(c.env.DB, {
     accountId: account.id,
     postType: body.post_type as MediaPostType,
@@ -196,6 +240,8 @@ mediaPosts.post('/api/media-posts', async (c) => {
     // Normalize to JST (+09:00) — due-check is a SQL string compare, so a
     // client-sent "Z" timestamp must not be stored as-is (see Task 1 note).
     scheduledAt: normalizedScheduledAt ?? jstNow(),
+    campaignGateId: body.campaign_gate_id ?? null,
+    campaignAutoActivate: false,
   });
 
   if (immediate) {
@@ -226,14 +272,103 @@ mediaPosts.get('/api/media-posts', async (c) => {
 });
 
 mediaPosts.get('/api/media-posts/:id', async (c) => {
+  const account = await resolveAccount(c);
+  if (!account) return c.json({ success: false, error: 'account not found' }, 404);
   const post = await getMediaPostById(c.env.DB, c.req.param('id'));
-  if (!post) return c.json({ success: false, error: 'not found' }, 404);
+  if (!post || post.account_id !== account.id) {
+    return c.json({ success: false, error: 'not found' }, 404);
+  }
   return c.json({ success: true, data: serializeMediaPost(post) });
 });
 
-mediaPosts.delete('/api/media-posts/:id', async (c) => {
+mediaPosts.patch('/api/media-posts/:id', async (c) => {
+  const account = await resolveAccount(c);
+  if (!account) return c.json({ success: false, error: 'account not found' }, 404);
   const post = await getMediaPostById(c.env.DB, c.req.param('id'));
-  if (!post) return c.json({ success: false, error: 'not found' }, 404);
+  if (!post || post.account_id !== account.id) {
+    return c.json({ success: false, error: 'not found' }, 404);
+  }
+  if (post.status !== 'scheduled') {
+    return c.json({ success: false, error: 'only scheduled posts can be edited' }, 409);
+  }
+
+  let body: {
+    post_type?: MediaPostType;
+    media?: MediaPostMediaItem[];
+    caption?: string | null;
+    cover_url?: string | null;
+    thumb_offset_ms?: number | null;
+    scheduled_at?: string;
+    campaign_gate_id?: string | null;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: 'invalid JSON body' }, 400);
+  }
+
+  let currentMedia: MediaPostMediaItem[] = [];
+  try {
+    currentMedia = JSON.parse(post.media) as MediaPostMediaItem[];
+  } catch {
+    return c.json({ success: false, error: 'stored media is invalid' }, 500);
+  }
+  const nextType = body.post_type ?? post.post_type;
+  const nextMedia = body.media ?? currentMedia;
+  const nextCover = body.cover_url !== undefined ? body.cover_url : post.cover_url;
+  const nextOffset = body.thumb_offset_ms !== undefined ? body.thumb_offset_ms : post.thumb_offset_ms;
+  const validationError = validateMediaPostInput(nextType, nextMedia);
+  if (validationError) return c.json({ success: false, error: validationError }, 400);
+  const coverValidationError = validateReelCoverInput(nextType, nextCover, nextOffset);
+  if (coverValidationError) return c.json({ success: false, error: coverValidationError }, 400);
+
+  let nextScheduledAt = post.scheduled_at;
+  if (body.scheduled_at !== undefined) {
+    const normalized = normalizeScheduledAt(body.scheduled_at);
+    if (!normalized) {
+      return c.json({ success: false, error: 'scheduled_at must be an ISO 8601 datetime' }, 400);
+    }
+    nextScheduledAt = normalized;
+  }
+
+  const campaignWasPatched = Object.prototype.hasOwnProperty.call(body, 'campaign_gate_id');
+  const nextCampaignId = campaignWasPatched ? body.campaign_gate_id ?? null : post.campaign_gate_id;
+  if (nextCampaignId) {
+    const checked = await validateCampaignForScheduledPost(
+      c.env.DB,
+      account.id,
+      nextCampaignId,
+      nextType,
+    );
+    if (checked.error) return c.json({ success: false, error: checked.error }, 400);
+  }
+
+  const campaignChanged = campaignWasPatched && nextCampaignId !== post.campaign_gate_id;
+  const updated = await updateScheduledMediaPost(c.env.DB, post.id, account.id, {
+    post_type: nextType,
+    media: JSON.stringify(nextMedia),
+    caption: body.caption !== undefined ? body.caption : post.caption,
+    cover_url: nextType === 'reel' ? nextCover ?? null : null,
+    thumb_offset_ms: nextType === 'reel' && !nextCover ? nextOffset ?? null : null,
+    scheduled_at: nextScheduledAt,
+    campaign_gate_id: nextCampaignId,
+    campaign_activation_status: nextCampaignId ? 'pending' : null,
+    campaign_error: null,
+    campaign_auto_activate: campaignChanged ? 0 : post.campaign_auto_activate,
+  });
+  if (!updated) {
+    return c.json({ success: false, error: 'the post started processing; reload before editing' }, 409);
+  }
+  return c.json({ success: true, data: serializeMediaPost(updated) });
+});
+
+mediaPosts.delete('/api/media-posts/:id', async (c) => {
+  const account = await resolveAccount(c);
+  if (!account) return c.json({ success: false, error: 'account not found' }, 404);
+  const post = await getMediaPostById(c.env.DB, c.req.param('id'));
+  if (!post || post.account_id !== account.id) {
+    return c.json({ success: false, error: 'not found' }, 404);
+  }
   const canceled = await cancelMediaPost(c.env.DB, post.id);
   if (!canceled) {
     return c.json(
@@ -241,18 +376,8 @@ mediaPosts.delete('/api/media-posts/:id', async (c) => {
       409,
     );
   }
-  if (post.campaign_gate_id) {
-    // A canceled reservation must never leave its empty-target gate available
-    // for accidental activation as an all-post campaign.
-    await c.env.DB
-      .prepare(
-        `UPDATE engagement_gates
-         SET status = 'archived', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now'))
-         WHERE id = ? AND status = 'paused'`,
-      )
-      .bind(post.campaign_gate_id)
-      .run();
-  }
+  // Never archive the campaign here: it may already serve other published or
+  // scheduled posts. Canceling a reservation only cancels this one link.
   return c.json({ success: true, data: null });
 });
 

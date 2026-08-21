@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   mediaPostsApi,
+  engagementGatesApi,
+  type EngagementGate,
   type MediaPostApi,
   type MediaPostMediaItem,
   type MediaPostType,
@@ -44,6 +46,13 @@ function pickerHintForType(postType: MediaPostType): string {
   return '画像 5MBまで・動画 100MBまで(MP4/MOV)'
 }
 
+function toDatetimeLocal(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return local.toISOString().slice(0, 16)
+}
+
 export default function PostsPage() {
   const router = useRouter()
   const [posts, setPosts] = useState<MediaPostApi[]>([])
@@ -51,6 +60,7 @@ export default function PostsPage() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [quota, setQuota] = useState<{ quotaUsage: number; quotaTotal: number } | null>(null)
+  const [campaigns, setCampaigns] = useState<EngagementGate[]>([])
 
   // form state
   const [postType, setPostType] = useState<MediaPostType>('feed_image')
@@ -63,7 +73,9 @@ export default function PostsPage() {
   const [caption, setCaption] = useState('')
   const [mode, setMode] = useState<'now' | 'schedule'>('now')
   const [scheduledAt, setScheduledAt] = useState('')
-  const [configureCampaign, setConfigureCampaign] = useState(false)
+  const [campaignMode, setCampaignMode] = useState<'none' | 'existing' | 'new'>('none')
+  const [selectedCampaignId, setSelectedCampaignId] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [coverUploading, setCoverUploading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -73,12 +85,14 @@ export default function PostsPage() {
     setLoading(true)
     setError('')
     try {
-      const [items, limit] = await Promise.all([
+      const [items, limit, gates] = await Promise.all([
         mediaPostsApi.list(),
         mediaPostsApi.publishingLimit().catch(() => null),
+        engagementGatesApi.list().catch(() => []),
       ])
       setPosts(items)
       setQuota(limit)
+      setCampaigns(gates)
     } catch (err) {
       setError(err instanceof Error ? err.message : '読み込みに失敗しました')
     } finally {
@@ -151,6 +165,57 @@ export default function PostsPage() {
     setThumbOffsetSeconds('0')
   }
 
+  const resetForm = () => {
+    setEditingId(null)
+    setPostType('feed_image')
+    setMediaItems([])
+    setCaption('')
+    setScheduledAt('')
+    setMode('now')
+    setCampaignMode('none')
+    setSelectedCampaignId('')
+    setFormError('')
+    resetReelCover()
+  }
+
+  const beginEdit = (post: MediaPostApi) => {
+    if (post.status !== 'scheduled') return
+    setEditingId(post.id)
+    setPostType(post.postType)
+    setMediaItems(post.media)
+    setCaption(post.caption ?? '')
+    setMode('schedule')
+    setScheduledAt(toDatetimeLocal(post.scheduledAt))
+    if (post.coverUrl) {
+      setReelCoverMode('image')
+      setCoverUrl(post.coverUrl)
+      setThumbOffsetSeconds('0')
+    } else if (post.thumbOffsetMs !== null) {
+      setReelCoverMode('frame')
+      setCoverUrl('')
+      setThumbOffsetSeconds(String(post.thumbOffsetMs / 1000))
+    } else {
+      resetReelCover()
+    }
+    if (post.campaignGateId) {
+      setCampaignMode('existing')
+      setSelectedCampaignId(post.campaignGateId)
+    } else {
+      setCampaignMode('none')
+      setSelectedCampaignId('')
+    }
+    setFormError('')
+    setNotice('予約投稿の内容を編集中です。保存するまで変更は反映されません。')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const eligibleCampaigns = campaigns.filter(
+    (gate) =>
+      gate.trigger_type === 'comment_on_post' &&
+      gate.status !== 'archived' &&
+      !(gate.status === 'active' && (gate.target_post_ids?.length ?? 0) === 0),
+  )
+
   const submit = async () => {
     setFormError('')
     if (mediaItems.length === 0) {
@@ -159,6 +224,10 @@ export default function PostsPage() {
     }
     if (mode === 'schedule' && !scheduledAt) {
       setFormError('予約日時を指定してください')
+      return
+    }
+    if (campaignMode === 'existing' && !selectedCampaignId) {
+      setFormError('紐づけるキャンペーンを選択してください')
       return
     }
     if (postType === 'reel' && reelCoverMode === 'image' && !coverUrl) {
@@ -176,25 +245,35 @@ export default function PostsPage() {
     }
     setSubmitting(true)
     try {
-      const post = await mediaPostsApi.create({
+      const campaignGateId = campaignMode === 'existing' ? selectedCampaignId : null
+      const payload = {
         postType,
         media: mediaItems,
-        caption: caption || undefined,
-        coverUrl: postType === 'reel' && reelCoverMode === 'image' ? coverUrl : undefined,
+        caption: caption || null,
+        coverUrl: postType === 'reel' && reelCoverMode === 'image' ? coverUrl : null,
         thumbOffsetMs:
-          postType === 'reel' && reelCoverMode === 'frame' ? thumbOffsetMs : undefined,
+          postType === 'reel' && reelCoverMode === 'frame' ? thumbOffsetMs : null,
         scheduledAt: mode === 'schedule' ? new Date(scheduledAt).toISOString() : undefined,
-      })
-      if (mode === 'schedule' && configureCampaign) {
+        campaignGateId,
+      }
+      const post = editingId
+        ? await mediaPostsApi.update(editingId, {
+            ...payload,
+            scheduledAt: new Date(scheduledAt).toISOString(),
+          })
+        : await mediaPostsApi.create({
+            ...payload,
+            caption: payload.caption ?? undefined,
+            coverUrl: payload.coverUrl ?? undefined,
+            thumbOffsetMs: payload.thumbOffsetMs ?? undefined,
+            campaignGateId: payload.campaignGateId ?? undefined,
+          })
+      if (mode === 'schedule' && campaignMode === 'new') {
         router.push(`/campaigns/new?scheduled_post_id=${encodeURIComponent(post.id)}`)
         return
       }
-      setMediaItems([])
-      setCaption('')
-      setScheduledAt('')
-      setMode('now')
-      setConfigureCampaign(false)
-      resetReelCover()
+      setNotice(editingId ? '予約投稿を更新しました。' : '予約投稿を保存しました。')
+      resetForm()
       await load()
     } catch (err) {
       setFormError(err instanceof Error ? err.message : '投稿の作成に失敗しました')
@@ -238,9 +317,18 @@ export default function PostsPage() {
           </div>
         )}
 
-        {/* ─── 新規投稿フォーム ─── */}
+        {/* ─── 投稿作成・編集フォーム ─── */}
         <section style={{ border: '1px solid #E5E7EB', borderRadius: 12, padding: 20, marginBottom: 32 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>新規投稿</h2>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>
+              {editingId ? '予約投稿を確認・編集' : '新規投稿'}
+            </h2>
+            {editingId && (
+              <button type="button" onClick={resetForm} style={{ border: '1px solid #D1D5DB', borderRadius: 8, background: 'white', color: '#6B7280', padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}>
+                編集をやめる
+              </button>
+            )}
+          </div>
 
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             {(Object.keys(TYPE_LABELS) as MediaPostType[]).map((t) => (
@@ -250,7 +338,10 @@ export default function PostsPage() {
                   setPostType(t)
                   setMediaItems([])
                   resetReelCover()
-                  if (t === 'story') setConfigureCampaign(false)
+                  if (t === 'story') {
+                    setCampaignMode('none')
+                    setSelectedCampaignId('')
+                  }
                 }}
                 style={{
                   padding: '6px 14px',
@@ -475,16 +566,19 @@ export default function PostsPage() {
           )}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 12 }}>
-            <label style={{ fontSize: 14 }}>
-              <input
-                type="radio"
-                checked={mode === 'now'}
-                onChange={() => {
-                  setMode('now')
-                  setConfigureCampaign(false)
-                }}
-              /> 今すぐ投稿
-            </label>
+            {!editingId && (
+              <label style={{ fontSize: 14 }}>
+                <input
+                  type="radio"
+                  checked={mode === 'now'}
+                  onChange={() => {
+                    setMode('now')
+                    setCampaignMode('none')
+                    setSelectedCampaignId('')
+                  }}
+                /> 今すぐ投稿
+              </label>
+            )}
             <label style={{ fontSize: 14 }}>
               <input type="radio" checked={mode === 'schedule'} onChange={() => setMode('schedule')} /> 日時指定
             </label>
@@ -503,34 +597,46 @@ export default function PostsPage() {
                 ※ 公開は指定時刻から最大5分ずれます(5分毎のバッチ処理)
               </p>
               {postType !== 'story' && (
-                <label
-                  style={{
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: 8,
-                    marginTop: 14,
-                    padding: 12,
-                    border: `1px solid ${configureCampaign ? '#E1306C' : '#D1D5DB'}`,
-                    borderRadius: 10,
-                    background: configureCampaign ? '#FDF2F8' : '#FAFAFA',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={configureCampaign}
-                    onChange={(e) => setConfigureCampaign(e.target.checked)}
-                    style={{ marginTop: 2 }}
-                  />
-                  <span>
-                    <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: '#374151' }}>
-                      続けてコメント自動応答を設定する
-                    </span>
-                    <span style={{ display: 'block', fontSize: 12, color: '#6B7280', marginTop: 2 }}>
-                      予約保存後にキャンペーン設定画面へ進みます。投稿が公開されるまでは自動応答は停止状態です。
-                    </span>
-                  </span>
-                </label>
+                <div style={{ marginTop: 14, padding: 14, border: '1px solid #D1D5DB', borderRadius: 10, background: '#FAFAFA' }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 10 }}>
+                    コメント自動応答キャンペーン
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <label style={{ fontSize: 13, color: '#374151' }}>
+                      <input type="radio" checked={campaignMode === 'none'} onChange={() => { setCampaignMode('none'); setSelectedCampaignId('') }} /> 設定しない
+                    </label>
+                    <label style={{ fontSize: 13, color: '#374151' }}>
+                      <input type="radio" checked={campaignMode === 'existing'} onChange={() => setCampaignMode('existing')} /> 既存のキャンペーンを選ぶ
+                    </label>
+                    {campaignMode === 'existing' && (
+                      <select
+                        value={selectedCampaignId}
+                        onChange={(e) => setSelectedCampaignId(e.target.value)}
+                        style={{ marginLeft: 22, maxWidth: 520, border: '1px solid #D1D5DB', borderRadius: 8, padding: '8px 10px', background: 'white', fontSize: 13 }}
+                      >
+                        <option value="">キャンペーンを選択してください</option>
+                        {eligibleCampaigns.map((gate) => (
+                          <option key={gate.id} value={gate.id}>
+                            {gate.name}（{gate.status === 'active' ? '稼働中' : '一時停止'}）
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {campaignMode === 'existing' && eligibleCampaigns.length === 0 && (
+                      <div style={{ marginLeft: 22, fontSize: 12, color: '#A16207' }}>
+                        選択できるコメントキャンペーンがありません。
+                      </div>
+                    )}
+                    <label style={{ fontSize: 13, color: '#374151' }}>
+                      <input type="radio" checked={campaignMode === 'new'} onChange={() => { setCampaignMode('new'); setSelectedCampaignId('') }} /> 新しいキャンペーンを作成する
+                    </label>
+                    {campaignMode === 'new' && (
+                      <div style={{ marginLeft: 22, fontSize: 12, color: '#6B7280' }}>
+                        予約投稿を保存した後、キャンペーン設定画面へ進みます。
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
             </>
           )}
@@ -544,9 +650,11 @@ export default function PostsPage() {
           >
             {submitting
               ? '送信中…'
-              : mode === 'now'
+              : editingId
+                ? '変更を保存'
+                : mode === 'now'
                 ? '投稿する'
-                : configureCampaign
+                : campaignMode === 'new'
                   ? '予約して自動応答を設定'
                   : '予約する'}
           </button>
@@ -563,6 +671,7 @@ export default function PostsPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {posts.map((post) => {
               const badge = STATUS_BADGES[post.status] ?? STATUS_BADGES.canceled
+              const linkedCampaign = campaigns.find((gate) => gate.id === post.campaignGateId)
               return (
                 <div key={post.id} style={{ border: '1px solid #E5E7EB', borderRadius: 12, padding: 16, display: 'flex', gap: 16, alignItems: 'flex-start' }}>
                   {post.coverUrl ? (
@@ -598,31 +707,36 @@ export default function PostsPage() {
                       <p style={{ fontSize: 12, color: '#B91C1C', marginTop: 4 }}>{post.error}</p>
                     )}
                     {post.campaignGateId && (
-                      <p
-                        style={{
-                          fontSize: 12,
-                          color:
-                            post.campaignActivationStatus === 'active'
-                              ? '#047857'
-                              : post.campaignActivationStatus === 'failed'
-                                ? '#B91C1C'
-                                : '#A16207',
-                          marginTop: 4,
-                        }}
-                      >
-                        自動応答: {post.campaignActivationStatus === 'active'
-                          ? '稼働中'
-                          : post.campaignActivationStatus === 'failed'
-                            ? '開始失敗'
-                            : post.campaignActivationStatus === 'canceled'
-                              ? 'キャンセル済み'
-                              : '公開待ち'}
-                        {post.campaignError ? `（${post.campaignError}）` : ''}
-                      </p>
+                      <div style={{ fontSize: 12, marginTop: 4 }}>
+                        <p
+                          style={{
+                            color:
+                              post.campaignActivationStatus === 'active'
+                                ? '#047857'
+                                : post.campaignActivationStatus === 'failed'
+                                  ? '#B91C1C'
+                                  : '#A16207',
+                            margin: 0,
+                          }}
+                        >
+                          自動応答: {post.campaignActivationStatus === 'active'
+                            ? '紐づけ済み'
+                            : post.campaignActivationStatus === 'failed'
+                              ? '開始失敗'
+                              : post.campaignActivationStatus === 'canceled'
+                                ? 'キャンセル済み'
+                                : '公開待ち'}
+                          {post.campaignError ? `（${post.campaignError}）` : ''}
+                        </p>
+                        <p style={{ color: '#6B7280', margin: '2px 0 0' }}>
+                          キャンペーン: {linkedCampaign?.name ?? post.campaignGateId}
+                        </p>
+                      </div>
                     )}
                   </div>
                   {post.status === 'scheduled' && (
                     <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                      <button onClick={() => beginEdit(post)} style={{ fontSize: 12, padding: '6px 12px', borderRadius: 8, border: '1px solid #2563EB', background: 'white', color: '#2563EB', cursor: 'pointer' }}>確認・編集</button>
                       <button onClick={() => void publishNow(post.id)} style={{ fontSize: 12, padding: '6px 12px', borderRadius: 8, border: '1px solid #E1306C', background: 'white', color: '#E1306C', cursor: 'pointer' }}>今すぐ公開</button>
                       <button onClick={() => void cancel(post.id)} style={{ fontSize: 12, padding: '6px 12px', borderRadius: 8, border: '1px solid #D1D5DB', background: 'white', color: '#6B7280', cursor: 'pointer' }}>キャンセル</button>
                     </div>

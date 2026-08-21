@@ -12,7 +12,9 @@ import {
   hasCheckFollowPostback,
   setGateTargetPosts,
   getMediaPostById,
-  getMediaPostByCampaignGateId,
+  listMediaPosts,
+  getMediaPostsByCampaignGateId,
+  replaceScheduledCampaignMediaPosts,
   attachCampaignToMediaPost,
   parseGateTriggerKeywords,
   type EngagementGate,
@@ -399,6 +401,7 @@ engagementGates.post('/api/engagement-gates', async (c) => {
       scheduledPost.id,
       gate.id,
       activationStatus,
+      true,
     );
     if (!attached) {
       await deleteEngagementGate(c.env.DB, gate.id);
@@ -432,6 +435,73 @@ engagementGates.post('/api/engagement-gates/:id/duplicate', async (c) => {
       500,
     );
   }
+});
+
+/** Replace the editable scheduled-post links for one comment campaign.
+ * Published/processing posts are immutable history and are never detached. */
+engagementGates.put('/api/engagement-gates/:id/scheduled-posts', async (c) => {
+  const account = await resolveAccount(c);
+  if (!account) return c.json({ success: false, error: 'account not found' }, 404);
+  const gate = await getEngagementGate(c.env.DB, c.req.param('id'));
+  if (!gate || gate.account_id !== account.id) {
+    return c.json({ success: false, error: 'campaign not found' }, 404);
+  }
+  if (gate.trigger_type !== 'comment_on_post') {
+    return c.json({ success: false, error: 'only comment campaigns can link scheduled posts' }, 400);
+  }
+  if (gate.status === 'archived') {
+    return c.json({ success: false, error: 'archived campaigns cannot be changed' }, 409);
+  }
+  if (gate.status === 'active' && (gate.target_post_ids?.length ?? 0) === 0) {
+    return c.json(
+      { success: false, error: 'all-post default campaigns do not need individual post links' },
+      409,
+    );
+  }
+
+  let body: { post_ids?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: 'invalid JSON body' }, 400);
+  }
+  if (!Array.isArray(body.post_ids) || body.post_ids.some((id) => typeof id !== 'string')) {
+    return c.json({ success: false, error: 'post_ids must be an array of strings' }, 400);
+  }
+  const postIds = [...new Set(body.post_ids as string[])];
+  if (postIds.length > 100) {
+    return c.json({ success: false, error: 'up to 100 scheduled posts can be linked at once' }, 400);
+  }
+
+  const scheduled = await listMediaPosts(c.env.DB, {
+    accountId: account.id,
+    status: 'scheduled',
+    limit: 200,
+  });
+  const byId = new Map(scheduled.map((post) => [post.id, post]));
+  for (const postId of postIds) {
+    const post = byId.get(postId);
+    if (!post) return c.json({ success: false, error: `scheduled post not found: ${postId}` }, 404);
+    if (post.post_type === 'story') {
+      return c.json({ success: false, error: 'story posts cannot use a comment campaign' }, 400);
+    }
+    if (post.campaign_gate_id && post.campaign_gate_id !== gate.id) {
+      return c.json({ success: false, error: 'a selected post belongs to another campaign' }, 409);
+    }
+  }
+
+  const replaced = await replaceScheduledCampaignMediaPosts(c.env.DB, {
+    accountId: account.id,
+    gateId: gate.id,
+    postIds,
+  });
+  if (!replaced) {
+    return c.json(
+      { success: false, error: 'a post changed or started processing; reload and try again' },
+      409,
+    );
+  }
+  return c.json({ success: true, data: { post_ids: postIds } });
 });
 
 engagementGates.get('/api/engagement-gates/:id', async (c) => {
@@ -477,12 +547,8 @@ engagementGates.patch('/api/engagement-gates/:id', async (c) => {
   // Until Instagram supplies a real media id, activating this gate would
   // make its empty target list apply to every post. Block that unsafe state.
   if (patch.status === 'active') {
-    const linkedPost = await getMediaPostByCampaignGateId(c.env.DB, id);
-    if (
-      linkedPost &&
-      linkedPost.campaign_activation_status !== 'active' &&
-      !linkedPost.published_media_id
-    ) {
+    const linkedPosts = await getMediaPostsByCampaignGateId(c.env.DB, id, 'scheduled');
+    if ((existing.target_post_ids?.length ?? 0) === 0 && linkedPosts.length > 0) {
       return c.json(
         { success: false, error: 'このキャンペーンは予約投稿の公開後に自動で有効になります' },
         409,

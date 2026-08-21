@@ -32,6 +32,9 @@ export interface MediaPost {
   campaign_gate_id: string | null;
   campaign_activation_status: CampaignActivationStatus | null;
   campaign_error: string | null;
+  /** 1 only when this post created a new paused campaign that should become
+   * active automatically after Instagram publishes the post. */
+  campaign_auto_activate: number;
   created_at: string;
   updated_at: string;
 }
@@ -44,6 +47,8 @@ export interface CreateMediaPostInput {
   coverUrl?: string | null;
   thumbOffsetMs?: number | null;
   scheduledAt: string;
+  campaignGateId?: string | null;
+  campaignAutoActivate?: boolean;
 }
 
 export async function createMediaPost(
@@ -56,8 +61,9 @@ export async function createMediaPost(
       `INSERT INTO media_posts
          (id, account_id, post_type, media, caption, cover_url, thumb_offset_ms, status, scheduled_at,
           creation_id, child_creation_ids, published_media_id, attempt_count,
-          error, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, NULL, NULL, NULL, 0, NULL, ?, ?)
+          error, campaign_gate_id, campaign_activation_status, campaign_error,
+          campaign_auto_activate, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, NULL, NULL, NULL, 0, NULL, ?, ?, NULL, ?, ?, ?)
        RETURNING *`,
     )
     .bind(
@@ -69,6 +75,9 @@ export async function createMediaPost(
       input.coverUrl ?? null,
       input.coverUrl ? null : input.thumbOffsetMs ?? null,
       input.scheduledAt,
+      input.campaignGateId ?? null,
+      input.campaignGateId ? 'pending' : null,
+      input.campaignAutoActivate ? 1 : 0,
       now,
       now,
     )
@@ -149,10 +158,16 @@ export type UpdateMediaPostInput = Partial<
     | 'published_media_id'
     | 'attempt_count'
     | 'error'
+    | 'post_type'
+    | 'media'
+    | 'caption'
+    | 'cover_url'
+    | 'thumb_offset_ms'
     | 'scheduled_at'
     | 'campaign_gate_id'
     | 'campaign_activation_status'
     | 'campaign_error'
+    | 'campaign_auto_activate'
   >
 >;
 
@@ -170,10 +185,16 @@ export async function updateMediaPost(
     'published_media_id',
     'attempt_count',
     'error',
+    'post_type',
+    'media',
+    'caption',
+    'cover_url',
+    'thumb_offset_ms',
     'scheduled_at',
     'campaign_gate_id',
     'campaign_activation_status',
     'campaign_error',
+    'campaign_auto_activate',
   ] as const) {
     if (updates[key] !== undefined) {
       fields.push(`${key} = ?`);
@@ -192,6 +213,60 @@ export async function updateMediaPost(
   return getMediaPostById(db, id);
 }
 
+/** Edit user-controlled reservation fields only while the row is still
+ * scheduled. The status predicate prevents a cron that has just claimed the
+ * post from racing with an operator edit. */
+export async function updateScheduledMediaPost(
+  db: D1Database,
+  id: string,
+  accountId: string,
+  updates: Pick<
+    UpdateMediaPostInput,
+    | 'post_type'
+    | 'media'
+    | 'caption'
+    | 'cover_url'
+    | 'thumb_offset_ms'
+    | 'scheduled_at'
+    | 'campaign_gate_id'
+    | 'campaign_activation_status'
+    | 'campaign_error'
+    | 'campaign_auto_activate'
+  >,
+): Promise<MediaPost | null> {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  for (const key of [
+    'post_type',
+    'media',
+    'caption',
+    'cover_url',
+    'thumb_offset_ms',
+    'scheduled_at',
+    'campaign_gate_id',
+    'campaign_activation_status',
+    'campaign_error',
+    'campaign_auto_activate',
+  ] as const) {
+    if (updates[key] !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(updates[key]);
+    }
+  }
+  if (fields.length === 0) return getMediaPostById(db, id);
+  fields.push('updated_at = ?');
+  values.push(jstNow(), id, accountId);
+  const result = await db
+    .prepare(
+      `UPDATE media_posts SET ${fields.join(', ')}
+       WHERE id = ? AND account_id = ? AND status = 'scheduled'`,
+    )
+    .bind(...values)
+    .run();
+  if ((result.meta.changes ?? 0) !== 1) return null;
+  return getMediaPostById(db, id);
+}
+
 /**
  * Attach one gate to an unpublished media post. The gate itself must be
  * created paused: an active comment gate with no real IG media id would be
@@ -202,17 +277,18 @@ export async function attachCampaignToMediaPost(
   postId: string,
   gateId: string,
   activationStatus: CampaignActivationStatus = 'pending',
+  autoActivate = false,
 ): Promise<boolean> {
   const result = await db
     .prepare(
       `UPDATE media_posts
-       SET campaign_gate_id = ?, campaign_activation_status = ?,
+       SET campaign_gate_id = ?, campaign_activation_status = ?, campaign_auto_activate = ?,
            campaign_error = NULL, updated_at = ?
        WHERE id = ?
          AND campaign_gate_id IS NULL
          AND status NOT IN ('failed', 'canceled')`,
     )
-    .bind(gateId, activationStatus, jstNow(), postId)
+    .bind(gateId, activationStatus, autoActivate ? 1 : 0, jstNow(), postId)
     .run();
   return (result.meta.changes ?? 0) > 0;
 }
@@ -225,6 +301,67 @@ export async function getMediaPostByCampaignGateId(
     .prepare(`SELECT * FROM media_posts WHERE campaign_gate_id = ?`)
     .bind(gateId)
     .first<MediaPost>();
+}
+
+export async function getMediaPostsByCampaignGateId(
+  db: D1Database,
+  gateId: string,
+  status?: MediaPostStatus,
+): Promise<MediaPost[]> {
+  const result = status
+    ? await db
+        .prepare(`SELECT * FROM media_posts WHERE campaign_gate_id = ? AND status = ? ORDER BY scheduled_at ASC`)
+        .bind(gateId, status)
+        .all<MediaPost>()
+    : await db
+        .prepare(`SELECT * FROM media_posts WHERE campaign_gate_id = ? ORDER BY scheduled_at ASC`)
+        .bind(gateId)
+        .all<MediaPost>();
+  return result.results;
+}
+
+/** Replace only the still-editable scheduled-post links for one campaign.
+ * Published/processing history is intentionally untouched. Validation of
+ * account, post type and conflicting links happens in the API route first;
+ * status/account guards here make the write safe against a cron race. */
+export async function replaceScheduledCampaignMediaPosts(
+  db: D1Database,
+  input: { accountId: string; gateId: string; postIds: string[] },
+): Promise<boolean> {
+  const wanted = [...new Set(input.postIds)];
+  const current = await getMediaPostsByCampaignGateId(db, input.gateId, 'scheduled');
+  const currentIds = new Set(current.filter((p) => p.account_id === input.accountId).map((p) => p.id));
+  const wantedIds = new Set(wanted);
+  const statements: D1PreparedStatement[] = [];
+
+  for (const id of currentIds) {
+    if (!wantedIds.has(id)) {
+      statements.push(
+        db.prepare(
+          `UPDATE media_posts
+           SET campaign_gate_id = NULL, campaign_activation_status = NULL,
+               campaign_error = NULL, campaign_auto_activate = 0, updated_at = ?
+           WHERE id = ? AND account_id = ? AND status = 'scheduled' AND campaign_gate_id = ?`,
+        ).bind(jstNow(), id, input.accountId, input.gateId),
+      );
+    }
+  }
+  for (const id of wantedIds) {
+    if (!currentIds.has(id)) {
+      statements.push(
+        db.prepare(
+          `UPDATE media_posts
+           SET campaign_gate_id = ?, campaign_activation_status = 'pending',
+               campaign_error = NULL, campaign_auto_activate = 0, updated_at = ?
+           WHERE id = ? AND account_id = ? AND status = 'scheduled'
+             AND campaign_gate_id IS NULL`,
+        ).bind(input.gateId, jstNow(), id, input.accountId),
+      );
+    }
+  }
+  if (statements.length === 0) return true;
+  const results = await db.batch(statements);
+  return results.every((result) => (result.meta.changes ?? 0) === 1);
 }
 
 /** Published posts whose linked campaign still needs its real IG media id. */

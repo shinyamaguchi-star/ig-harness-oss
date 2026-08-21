@@ -8,11 +8,13 @@ import {
   lineConnectionsApi,
   richMessagesApi,
   postsApi,
+  mediaPostsApi,
   type EngagementGate,
   type LineConnection,
   type RichMessage,
   type RichMessageBlock,
   type MediaItem,
+  type MediaPostApi,
 } from '@/lib/api'
 import Header from '@/components/layout/header'
 import RichMessagePreview from '@/components/rich-message-preview'
@@ -57,6 +59,8 @@ export default function CampaignDetailClient() {
    *  into a human-readable name in the cross-link badge. Fails silently —
    *  the id is displayed as-is if the fetch errors. */
   const [lineConnections, setLineConnections] = useState<LineConnection[]>([])
+  const [scheduledPosts, setScheduledPosts] = useState<MediaPostApi[]>([])
+  const [selectedScheduledPostIds, setSelectedScheduledPostIds] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -72,6 +76,19 @@ export default function CampaignDetailClient() {
     try {
       const data = await engagementGatesApi.get(id)
       setGate(data)
+
+      if (data.trigger_type === 'comment_on_post') {
+        const reservations = await mediaPostsApi.list('scheduled').catch(() => [])
+        setScheduledPosts(reservations.filter((post) => post.postType !== 'story'))
+        setSelectedScheduledPostIds(
+          reservations
+            .filter((post) => post.campaignGateId === data.id)
+            .map((post) => post.id),
+        )
+      } else {
+        setScheduledPosts([])
+        setSelectedScheduledPostIds([])
+      }
 
       const ids = [
         data.initial_dm_rich_message_id,
@@ -175,6 +192,20 @@ export default function CampaignDetailClient() {
       router.push(`/campaigns/${copied.id}/edit?copied=1`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'キャンペーンのコピーに失敗しました')
+      setBusy(false)
+    }
+  }
+
+  const handleSaveScheduledPosts = async () => {
+    if (!gate) return
+    setBusy(true)
+    setError('')
+    try {
+      await engagementGatesApi.setScheduledPosts(gate.id, selectedScheduledPostIds)
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '予約投稿の紐づけ更新に失敗しました')
+    } finally {
       setBusy(false)
     }
   }
@@ -313,6 +344,82 @@ export default function CampaignDetailClient() {
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
           {error}
         </div>
+      )}
+
+      {gate.trigger_type === 'comment_on_post' && (
+        <section className="mb-8 bg-white rounded-xl border border-gray-200 p-5">
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">📅 予約投稿との紐づけ</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                このキャンペーンで使用する予約投稿を選択できます。投稿側の「確認・編集」から変更した内容もここへ反映されます。
+              </p>
+            </div>
+            <Link href="/posts" className="text-xs font-medium shrink-0" style={{ color: ACCENT }}>
+              投稿画面を開く →
+            </Link>
+          </div>
+
+          {gate.status === 'active' && (gate.target_post_ids?.length ?? 0) === 0 ? (
+            <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+              このキャンペーンは全投稿に反応するデフォルト設定です。個別の予約投稿を紐づける必要はありません。
+            </div>
+          ) : scheduledPosts.length === 0 ? (
+            <div className="text-sm text-gray-500 border border-dashed border-gray-300 rounded-lg p-4 text-center">
+              紐づけ可能な予約投稿はありません。先に投稿画面で予約投稿を作成してください。
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {scheduledPosts.map((post) => {
+                const linkedElsewhere = !!post.campaignGateId && post.campaignGateId !== gate.id
+                const checked = selectedScheduledPostIds.includes(post.id)
+                return (
+                  <label
+                    key={post.id}
+                    className={`flex items-center gap-3 border rounded-lg p-3 ${linkedElsewhere ? 'bg-gray-50 opacity-60' : 'bg-white cursor-pointer'}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={linkedElsewhere || busy || gate.status === 'archived'}
+                      onChange={(event) => {
+                        setSelectedScheduledPostIds((current) =>
+                          event.target.checked
+                            ? [...new Set([...current, post.id])]
+                            : current.filter((id) => id !== post.id),
+                        )
+                      }}
+                    />
+                    <div className="w-12 h-12 bg-gray-100 rounded overflow-hidden shrink-0">
+                      {post.media[0]?.type === 'image' ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={post.media[0].url} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">🎬</div>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm text-gray-800 truncate">{post.caption || 'キャプションなし'}</div>
+                      <div className="text-xs text-gray-500 mt-0.5">公開予定: {post.scheduledAt}</div>
+                      {linkedElsewhere && (
+                        <div className="text-xs text-amber-700 mt-0.5">別のキャンペーンに紐づいています</div>
+                      )}
+                    </div>
+                  </label>
+                )
+              })}
+              <button
+                type="button"
+                onClick={() => void handleSaveScheduledPosts()}
+                disabled={busy || gate.status === 'archived'}
+                className="mt-3 px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50"
+                style={{ backgroundColor: ACCENT }}
+              >
+                {busy ? '保存中…' : '予約投稿の紐づけを保存'}
+              </button>
+            </div>
+          )}
+        </section>
       )}
 
       {/* Funnel stats */}

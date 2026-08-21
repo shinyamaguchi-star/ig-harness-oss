@@ -12,10 +12,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const dbMocks = vi.hoisted(() => ({
   getMediaPostById: vi.fn(),
   updateMediaPost: vi.fn(),
+  updateScheduledMediaPost: vi.fn(),
   cancelMediaPost: vi.fn(),
   createMediaPost: vi.fn(),
   listMediaPosts: vi.fn(),
   getIgAccountById: vi.fn(),
+  getEngagementGate: vi.fn(),
   jstNow: vi.fn().mockReturnValue('2026-01-01T00:00:00+09:00'),
   toJstString: vi.fn((d: Date) => d.toISOString()),
 }));
@@ -62,8 +64,10 @@ const POST_OWNED_BY_B = {
   id: 'post-1',
   account_id: 'account-B',
   post_type: 'feed_image',
-  media: '[]',
+  media: JSON.stringify([{ url: 'https://example.com/post.jpg', type: 'image' }]),
   caption: null,
+  cover_url: null,
+  thumb_offset_ms: null,
   status: 'scheduled',
   scheduled_at: '2026-01-01T00:00:00+09:00',
   creation_id: null,
@@ -71,6 +75,10 @@ const POST_OWNED_BY_B = {
   published_media_id: null,
   attempt_count: 0,
   error: null,
+  campaign_gate_id: null,
+  campaign_activation_status: null,
+  campaign_error: null,
+  campaign_auto_activate: 0,
   created_at: '2026-01-01T00:00:00+09:00',
   updated_at: '2026-01-01T00:00:00+09:00',
 };
@@ -163,5 +171,88 @@ describe('POST /api/media-posts/:id/publish-now owning-account (Fix 1)', () => {
 
     expect(res.status).toBe(409);
     expect(dbMocks.getIgAccountById).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /api/media-posts/:id reservation editing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    accountsMocks.resolveAccount.mockResolvedValue(ACCOUNT_B);
+    dbMocks.getMediaPostById.mockResolvedValue(POST_OWNED_BY_B);
+  });
+
+  it('updates content and attaches an eligible existing campaign', async () => {
+    dbMocks.getEngagementGate.mockResolvedValue({
+      id: 'gate-2',
+      account_id: 'account-B',
+      status: 'active',
+      trigger_type: 'comment_on_post',
+      target_post_ids: ['existing-media'],
+    });
+    dbMocks.updateScheduledMediaPost.mockImplementation(
+      async (_db: unknown, _id: string, _accountId: string, patch: Record<string, unknown>) => ({
+        ...POST_OWNED_BY_B,
+        ...patch,
+      }),
+    );
+
+    const res = await mediaPosts.fetch(
+      new Request('https://worker.example.com/api/media-posts/post-1?account_id=account-B', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ caption: 'updated', campaign_gate_id: 'gate-2' }),
+      }),
+      makeEnv(),
+      executionCtx,
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.updateScheduledMediaPost).toHaveBeenCalledWith(
+      expect.anything(),
+      'post-1',
+      'account-B',
+      expect.objectContaining({
+        caption: 'updated',
+        campaign_gate_id: 'gate-2',
+        campaign_activation_status: 'pending',
+        campaign_auto_activate: 0,
+      }),
+    );
+  });
+
+  it('rejects edits after publishing has started', async () => {
+    dbMocks.getMediaPostById.mockResolvedValue({ ...POST_OWNED_BY_B, status: 'processing' });
+    const res = await mediaPosts.fetch(
+      new Request('https://worker.example.com/api/media-posts/post-1?account_id=account-B', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ caption: 'too late' }),
+      }),
+      makeEnv(),
+      executionCtx,
+    );
+    expect(res.status).toBe(409);
+    expect(dbMocks.updateScheduledMediaPost).not.toHaveBeenCalled();
+  });
+
+  it('rejects a campaign owned by another Instagram account', async () => {
+    dbMocks.getEngagementGate.mockResolvedValue({
+      id: 'foreign-gate',
+      account_id: 'account-A',
+      status: 'active',
+      trigger_type: 'comment_on_post',
+      target_post_ids: ['media-1'],
+    });
+    const res = await mediaPosts.fetch(
+      new Request('https://worker.example.com/api/media-posts/post-1?account_id=account-B', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaign_gate_id: 'foreign-gate' }),
+      }),
+      makeEnv(),
+      executionCtx,
+    );
+    expect(res.status).toBe(400);
+    expect(dbMocks.updateScheduledMediaPost).not.toHaveBeenCalled();
   });
 });

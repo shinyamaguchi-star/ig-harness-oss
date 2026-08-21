@@ -4,7 +4,7 @@ import {
   getMediaPostById,
   getPendingCampaignMediaPosts,
   getEngagementGate,
-  setGateTargetPosts,
+  addGateTargetPost,
   updateEngagementGate,
   updateMediaPost,
   type MediaPost,
@@ -190,7 +190,9 @@ async function advancePost(
   }
 }
 
-/** Bind the real IG media id to the prepared gate, then make it active. */
+/** Append the real IG media id to the prepared gate. Campaigns created from
+ * the reservation wizard auto-start; existing campaigns keep their current
+ * status so an intentionally paused campaign is never resumed implicitly. */
 async function activateLinkedCampaign(db: D1Database, post: MediaPost): Promise<void> {
   if (!post.campaign_gate_id || !post.published_media_id) return;
   try {
@@ -203,11 +205,10 @@ async function activateLinkedCampaign(db: D1Database, post: MediaPost): Promise<
       });
       return;
     }
-    await setGateTargetPosts(db, gate.id, [post.published_media_id]);
-    await updateEngagementGate(db, gate.id, {
-      target_post_id: post.published_media_id,
-      status: 'active',
-    });
+    await addGateTargetPost(db, gate.id, post.published_media_id);
+    if (post.campaign_auto_activate === 1 && gate.status === 'paused') {
+      await updateEngagementGate(db, gate.id, { status: 'active' });
+    }
     await updateMediaPost(db, post.id, {
       campaign_activation_status: 'active',
       campaign_error: null,

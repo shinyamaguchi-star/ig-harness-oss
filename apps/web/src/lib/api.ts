@@ -515,6 +515,7 @@ export interface MediaPostApi {
   campaignGateId: string | null
   campaignActivationStatus: 'pending' | 'active' | 'failed' | 'canceled' | null
   campaignError: string | null
+  campaignAutoActivate: boolean
   createdAt: string
   updatedAt: string
 }
@@ -532,6 +533,7 @@ export const mediaPostsApi = {
     coverUrl?: string
     thumbOffsetMs?: number
     scheduledAt?: string
+    campaignGateId?: string
   }): Promise<MediaPostApi> => {
     const res = await fetchApi<ApiResponse<MediaPostApi>>('/api/media-posts', {
       method: 'POST',
@@ -542,6 +544,7 @@ export const mediaPostsApi = {
         cover_url: input.coverUrl,
         thumb_offset_ms: input.coverUrl ? undefined : input.thumbOffsetMs,
         scheduled_at: input.scheduledAt,
+        campaign_gate_id: input.campaignGateId,
       }),
     })
     if (!res.data) throw new Error(res.error || '投稿の作成に失敗しました')
@@ -550,6 +553,30 @@ export const mediaPostsApi = {
   get: async (id: string): Promise<MediaPostApi> => {
     const res = await fetchApi<ApiResponse<MediaPostApi>>(`/api/media-posts/${id}`)
     if (!res.data) throw new Error(res.error || '予約投稿の取得に失敗しました')
+    return res.data
+  },
+  update: async (id: string, input: {
+    postType: MediaPostType
+    media: MediaPostMediaItem[]
+    caption?: string | null
+    coverUrl?: string | null
+    thumbOffsetMs?: number | null
+    scheduledAt: string
+    campaignGateId?: string | null
+  }): Promise<MediaPostApi> => {
+    const res = await fetchApi<ApiResponse<MediaPostApi>>(`/api/media-posts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        post_type: input.postType,
+        media: input.media,
+        caption: input.caption,
+        cover_url: input.coverUrl,
+        thumb_offset_ms: input.coverUrl ? null : input.thumbOffsetMs,
+        scheduled_at: input.scheduledAt,
+        campaign_gate_id: input.campaignGateId,
+      }),
+    })
+    if (!res.data) throw new Error(res.error || '予約投稿の更新に失敗しました')
     return res.data
   },
   cancel: async (id: string): Promise<void> => {
@@ -615,6 +642,14 @@ export const engagementGatesApi = {
     })
     if (!res.data) throw new Error(res.error || 'Failed to update engagement gate')
     return res.data
+  },
+  setScheduledPosts: async (id: string, postIds: string[]): Promise<string[]> => {
+    const res = await fetchApi<ApiResponse<{ post_ids: string[] }>>(
+      `/api/engagement-gates/${id}/scheduled-posts`,
+      { method: 'PUT', body: JSON.stringify({ post_ids: postIds }) },
+    )
+    if (!res.data) throw new Error(res.error || '予約投稿の紐づけ更新に失敗しました')
+    return res.data.post_ids
   },
   duplicate: async (id: string): Promise<EngagementGate> => {
     const res = await fetchApi<ApiResponse<EngagementGate>>(

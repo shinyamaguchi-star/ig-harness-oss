@@ -1,5 +1,7 @@
 // packages/db/src/engagement-gates.ts
 
+import { jstNow } from './utils.js';
+
 export interface EngagementGate {
   id: string;
   name: string;
@@ -49,6 +51,7 @@ export interface EngagementGate {
    * a separate table, so db-level INSERT/UPDATE helpers don't touch it.
    */
   target_post_ids?: string[];
+  account_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -244,6 +247,27 @@ export async function setGateTargetPosts(
       .bind(gateId, pid)
       .run();
   }
+}
+
+/** Add one published Instagram media id without replacing the campaign's
+ * existing target posts. Used when a linked scheduled post is published. */
+export async function addGateTargetPost(
+  db: D1Database,
+  gateId: string,
+  postId: string,
+): Promise<void> {
+  await db.batch([
+    db
+      .prepare('INSERT OR IGNORE INTO gate_target_posts (gate_id, post_id) VALUES (?, ?)')
+      .bind(gateId, postId),
+    db
+      .prepare(
+        `UPDATE engagement_gates
+         SET target_post_id = COALESCE(target_post_id, ?), updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(postId, jstNow(), gateId),
+  ]);
 }
 
 /**
