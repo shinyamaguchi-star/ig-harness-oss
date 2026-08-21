@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { triggerGateForComment } from '../engagement-gate.js';
+import { triggerGateForComment, triggerGateForDmKeyword } from '../engagement-gate.js';
 
 // Module-level mock so logMessage doesn't hit the real DB
 vi.mock('@ig-harness/db', async (importOriginal) => {
@@ -30,11 +30,28 @@ function createMockDb() {
           return deliveries.find((d) => d.id === params[0]) ?? null;
         }
         if (sql.includes('FROM gate_deliveries') && sql.includes('WHERE gate_id = ? AND follower_id = ?')) {
-          return deliveries.find((d) => d.gate_id === params[0] && d.follower_id === params[1]) ?? null;
+          const expectsPost = sql.includes('trigger_post_id = ?');
+          const expectsGlobal = sql.includes('trigger_post_id IS NULL');
+          return deliveries.find((d) =>
+            d.gate_id === params[0] &&
+            d.follower_id === params[1] &&
+            (!expectsPost || d.trigger_post_id === params[2]) &&
+            (!expectsGlobal || d.trigger_post_id == null),
+          ) ?? null;
         }
         return null;
       },
       async all<T>() {
+        if (sql.includes('FROM gate_target_posts')) {
+          return {
+            results: gates.flatMap((gate) =>
+              (gate.target_post_ids ?? []).map((postId: string) => ({
+                gate_id: gate.id,
+                post_id: postId,
+              })),
+            ),
+          };
+        }
         if (sql.includes("FROM engagement_gates") && sql.includes("status = 'active'")) {
           return { results: gates.filter((g) => g.status === 'active') };
         }
@@ -47,7 +64,7 @@ function createMockDb() {
         if (sql.startsWith('INSERT INTO gate_deliveries')) {
           deliveries.push({
             id: params[0], gate_id: params[1], follower_id: params[2],
-            igsid: params[3], metadata: params[4],
+            igsid: params[3], metadata: params[4], trigger_post_id: params[5] ?? null,
             status: 'triggered', loop_count: 0,
             last_check_at: null, delivered_at: null,
             triggered_at: new Date().toISOString(),
@@ -126,10 +143,102 @@ describe('triggerGateForComment', () => {
     expect(db.deliveries).toHaveLength(1);
     expect(db.deliveries[0].gate_id).toBe('gate-1');
     expect(db.deliveries[0].follower_id).toBe(42);
+    expect(db.deliveries[0].trigger_post_id).toBe('post-1');
     expect(fakeIgClient.sendGenericTemplate).toHaveBeenCalledTimes(1);
     const call = fakeIgClient.sendGenericTemplate.mock.calls[0] as unknown as [string, unknown[]];
     expect(call[0]).toBe('IGSID42');
     expect(JSON.stringify(call[1])).toContain('CHECK_FOLLOW:gate-1:');
+  });
+
+  it('sends comment reply and CTA once per linked post for the same follower', async () => {
+    const db = createMockDb();
+    db.gates.push({
+      id: 'gate-multi-post',
+      status: 'active',
+      trigger_type: 'comment_on_post',
+      target_post_id: 'post-1',
+      target_post_ids: ['post-1', 'post-2'],
+      trigger_keyword: '参加',
+      require_follow: 1,
+      initial_dm_text: '特典を確認してください',
+      initial_dm_button_label: '確認する',
+      follow_reminder_dm_text: '',
+      follow_reminder_button_label: '',
+      reward_dm_text: '',
+      reward_url: null,
+      max_loops: 0,
+      allow_repeat: 0,
+      comment_reply_text: 'DMを確認してください',
+      created_at: '2026-01-01T00:00:00Z',
+    });
+
+    const base = {
+      commentText: '参加します',
+      commenterUsername: 'sample_user',
+      follower: { id: 42, igsid: 'IGSID42' },
+    };
+    await triggerGateForComment(db, fakeIgClient as never, {
+      ...base,
+      postId: 'post-1',
+      commentId: 'comment-1',
+    });
+    await triggerGateForComment(db, fakeIgClient as never, {
+      ...base,
+      postId: 'post-1',
+      commentId: 'comment-1-duplicate',
+    });
+    await triggerGateForComment(db, fakeIgClient as never, {
+      ...base,
+      postId: 'post-2',
+      commentId: 'comment-2',
+    });
+
+    expect(db.deliveries).toHaveLength(2);
+    expect(db.deliveries.map((d) => d.trigger_post_id)).toEqual(['post-1', 'post-2']);
+    expect(fakeIgClient.sendGenericTemplate).toHaveBeenCalledTimes(2);
+    expect(fakeIgClient.replyToComment).toHaveBeenCalledTimes(2);
+    expect(fakeIgClient.replyToComment).toHaveBeenNthCalledWith(
+      1,
+      'comment-1',
+      'DMを確認してください',
+    );
+    expect(fakeIgClient.replyToComment).toHaveBeenNthCalledWith(
+      2,
+      'comment-2',
+      'DMを確認してください',
+    );
+  });
+
+  it('keeps DM keyword delivery idempotent across the account', async () => {
+    const db = createMockDb();
+    db.gates.push({
+      id: 'gate-dm',
+      status: 'active',
+      trigger_type: 'dm_keyword',
+      target_post_id: null,
+      trigger_keyword: '案内',
+      require_follow: 1,
+      initial_dm_text: 'ご案内です',
+      initial_dm_button_label: '確認する',
+      follow_reminder_dm_text: '',
+      follow_reminder_button_label: '',
+      reward_dm_text: '',
+      reward_url: null,
+      max_loops: 0,
+      allow_repeat: 0,
+      created_at: '2026-01-01T00:00:00Z',
+    });
+
+    const args = {
+      text: '案内をください',
+      follower: { id: 42, igsid: 'IGSID42' },
+    };
+    await triggerGateForDmKeyword(db, fakeIgClient as never, args);
+    await triggerGateForDmKeyword(db, fakeIgClient as never, args);
+
+    expect(db.deliveries).toHaveLength(1);
+    expect(db.deliveries[0].trigger_post_id).toBeNull();
+    expect(fakeIgClient.sendGenericTemplate).toHaveBeenCalledTimes(1);
   });
 
   it('does nothing when no active gate matches the post', async () => {

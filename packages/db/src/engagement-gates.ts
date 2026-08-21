@@ -27,7 +27,8 @@ export interface EngagementGate {
   /** When 1, every matching trigger creates a new delivery and the
    *  service skips the "already triggered" early-return — the same
    *  follower can receive the CTA flow repeatedly. Default 0
-   *  (idempotent: 1 follower × 1 gate = 1 delivery). */
+   *  (comment campaigns: once per follower × gate × post; account-wide
+   *  DM/story campaigns: once per follower × gate). */
   allow_repeat: number;
   /**
    * LINE Harness multi-connection binding. When the operator picks a
@@ -104,6 +105,10 @@ export interface GateDelivery {
   gate_id: string;
   follower_id: number;
   igsid: string;
+  /** Instagram media id that triggered a comment campaign delivery.
+   * NULL for account-wide DM keyword / story mention campaigns and for
+   * legacy rows whose source post cannot be reconstructed safely. */
+  trigger_post_id: string | null;
   status: 'triggered' | 'cta_sent' | 'pending_follow' | 'delivered' | 'dropped';
   loop_count: number;
   last_check_at: string | null;
@@ -319,6 +324,9 @@ export async function createGateDelivery(
     follower_id: number;
     igsid: string;
     metadata?: object;
+    /** Set for comment campaigns so idempotency is one delivery per
+     * follower per post. Leave NULL for account-wide DM/story campaigns. */
+    trigger_post_id?: string | null;
     /** Pass `gate.allow_repeat` here. When 1, this helper always inserts a
      *  new delivery row instead of reusing the existing per-follower row.
      *  Migration 0013 dropped the unique index, so concurrent rows are
@@ -333,10 +341,18 @@ export async function createGateDelivery(
   if (data.allow_repeat === 1) {
     await db
       .prepare(
-        `INSERT INTO gate_deliveries (id, gate_id, follower_id, igsid, metadata)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO gate_deliveries
+           (id, gate_id, follower_id, igsid, metadata, trigger_post_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .bind(id, data.gate_id, data.follower_id, data.igsid, JSON.stringify(data.metadata ?? {}))
+      .bind(
+        id,
+        data.gate_id,
+        data.follower_id,
+        data.igsid,
+        JSON.stringify(data.metadata ?? {}),
+        data.trigger_post_id ?? null,
+      )
       .run();
     const row = await db
       .prepare('SELECT * FROM gate_deliveries WHERE id = ?')
@@ -346,22 +362,44 @@ export async function createGateDelivery(
     return row;
   }
 
-  // allow_repeat=0 (legacy idempotent): SELECT existing row first; only
-  // INSERT if none exists. Race-tolerant: 2 concurrent webhooks may produce
-  // 2 rows in the worst case, but we no longer rely on the unique index
-  // (dropped in migration 0013) for correctness.
-  const existing = await db
-    .prepare('SELECT * FROM gate_deliveries WHERE gate_id = ? AND follower_id = ? LIMIT 1')
-    .bind(data.gate_id, data.follower_id)
-    .first<GateDelivery>();
+  // allow_repeat=0: SELECT the matching idempotency scope first; only INSERT
+  // if none exists. Comment campaigns include trigger_post_id, while
+  // account-wide DM/story campaigns keep it NULL. Race-tolerant: 2
+  // concurrent webhooks may produce 2 rows in the worst case because we do
+  // not rely on a unique index (allow_repeat=1 intentionally permits rows).
+  const existing = data.trigger_post_id
+    ? await db
+        .prepare(
+          `SELECT * FROM gate_deliveries
+           WHERE gate_id = ? AND follower_id = ? AND trigger_post_id = ?
+           LIMIT 1`,
+        )
+        .bind(data.gate_id, data.follower_id, data.trigger_post_id)
+        .first<GateDelivery>()
+    : await db
+        .prepare(
+          `SELECT * FROM gate_deliveries
+           WHERE gate_id = ? AND follower_id = ? AND trigger_post_id IS NULL
+           LIMIT 1`,
+        )
+        .bind(data.gate_id, data.follower_id)
+        .first<GateDelivery>();
   if (existing) return existing;
 
   await db
     .prepare(
-      `INSERT INTO gate_deliveries (id, gate_id, follower_id, igsid, metadata)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO gate_deliveries
+         (id, gate_id, follower_id, igsid, metadata, trigger_post_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, data.gate_id, data.follower_id, data.igsid, JSON.stringify(data.metadata ?? {}))
+    .bind(
+      id,
+      data.gate_id,
+      data.follower_id,
+      data.igsid,
+      JSON.stringify(data.metadata ?? {}),
+      data.trigger_post_id ?? null,
+    )
     .run();
   const row = await db
     .prepare('SELECT * FROM gate_deliveries WHERE id = ?')

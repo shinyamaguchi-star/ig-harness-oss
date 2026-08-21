@@ -644,6 +644,9 @@ export interface GateDelivery {
   gate_id: string
   follower_id: number
   igsid: string
+  /** Source Instagram media id for comment campaigns. NULL/omitted for
+   * account-wide DM keyword and story mention campaigns. */
+  trigger_post_id?: string | null
   status: GateDeliveryStatus
   loop_count: number
   last_check_at: string | null

@@ -243,6 +243,7 @@ CREATE TABLE IF NOT EXISTS gate_deliveries (
   gate_id TEXT NOT NULL REFERENCES engagement_gates(id) ON DELETE CASCADE,
   follower_id INTEGER NOT NULL REFERENCES followers(id) ON DELETE CASCADE,
   igsid TEXT NOT NULL,
+  trigger_post_id TEXT,
   status TEXT NOT NULL DEFAULT 'triggered'
     CHECK(status IN ('triggered','cta_sent','pending_follow','delivered','dropped')),
   loop_count INTEGER NOT NULL DEFAULT 0,
@@ -258,7 +259,8 @@ CREATE INDEX IF NOT EXISTS idx_gate_deliveries_gate ON gate_deliveries(gate_id);
 CREATE INDEX IF NOT EXISTS idx_gate_deliveries_follower ON gate_deliveries(follower_id);
 CREATE INDEX IF NOT EXISTS idx_gate_deliveries_igsid ON gate_deliveries(igsid);
 CREATE INDEX IF NOT EXISTS idx_gate_deliveries_status ON gate_deliveries(status);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_gate_deliveries_gate_follower ON gate_deliveries(gate_id, follower_id);
+CREATE INDEX IF NOT EXISTS idx_gate_deliveries_gate_follower_post
+  ON gate_deliveries(gate_id, follower_id, trigger_post_id);
 
 -- Singleton row (id=1) holding the latest refreshed long-lived IG token.
 -- Cron extends the expiry before the 60-day window elapses so the env secret
