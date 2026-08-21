@@ -169,6 +169,66 @@ describe('processMediaPosts — scheduled posts', () => {
     );
   });
 
+  it('story batch: creates one ordered STORIES container per frame', async () => {
+    const post = makePost({
+      post_type: 'story',
+      media: JSON.stringify([
+        { url: 'https://example.com/1.jpg', type: 'image' },
+        { url: 'https://example.com/2.mp4', type: 'video' },
+        { url: 'https://example.com/3.jpg', type: 'image' },
+      ]),
+    });
+    vi.mocked(getDueMediaPosts).mockResolvedValueOnce([post] as any);
+    const client = makeClient();
+    client.createMediaContainer
+      .mockResolvedValueOnce({ id: 'story-1' })
+      .mockResolvedValueOnce({ id: 'story-2' })
+      .mockResolvedValueOnce({ id: 'story-3' });
+
+    await processMediaPosts(db, client, 'acc-1');
+
+    expect(client.createMediaContainer).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ imageUrl: 'https://example.com/1.jpg', mediaType: 'STORIES' }),
+    );
+    expect(client.createMediaContainer).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ videoUrl: 'https://example.com/2.mp4', mediaType: 'STORIES' }),
+    );
+    expect(updateMediaPost).toHaveBeenCalledWith(
+      db,
+      'post-1',
+      expect.objectContaining({
+        status: 'processing',
+        creation_id: 'story-1',
+        child_creation_ids: JSON.stringify(['story-1', 'story-2', 'story-3']),
+      }),
+    );
+  });
+
+  it('story batch: waits until the entire batch fits the publishing quota', async () => {
+    const post = makePost({
+      post_type: 'story',
+      media: JSON.stringify([
+        { url: 'https://example.com/1.jpg', type: 'image' },
+        { url: 'https://example.com/2.jpg', type: 'image' },
+      ]),
+    });
+    vi.mocked(getDueMediaPosts).mockResolvedValueOnce([post] as any);
+    const client = makeClient({
+      getPublishingLimit: vi.fn().mockResolvedValue({ quota_usage: 99, config: { quota_total: 100, quota_duration: 86400 } }),
+    });
+
+    await processMediaPosts(db, client, 'acc-1');
+
+    expect(client.createMediaContainer).not.toHaveBeenCalled();
+    expect(updateMediaPost).toHaveBeenCalledWith(
+      db,
+      'post-1',
+      expect.objectContaining({ error: expect.stringContaining('required=2') }),
+    );
+  });
+
   it('quota exhausted: stays scheduled with an error note, no container created', async () => {
     vi.mocked(getDueMediaPosts).mockResolvedValueOnce([makePost()] as any);
     const client = makeClient({
@@ -368,6 +428,57 @@ describe('processMediaPosts — processing posts', () => {
       'post-1',
       expect.objectContaining({ status: 'published' }),
     );
+  });
+
+  it('story batch: publishes every FINISHED frame in selected order', async () => {
+    vi.mocked(getProcessingMediaPosts).mockResolvedValueOnce([
+      makePost({
+        post_type: 'story',
+        status: 'processing',
+        creation_id: 'story-1',
+        child_creation_ids: JSON.stringify(['story-1', 'story-2', 'story-3']),
+      }),
+    ] as any);
+    const client = makeClient({
+      getContainerStatus: vi.fn().mockResolvedValue({ status_code: 'FINISHED' }),
+      publishMedia: vi.fn()
+        .mockResolvedValueOnce({ id: 'media-1' })
+        .mockResolvedValueOnce({ id: 'media-2' })
+        .mockResolvedValueOnce({ id: 'media-3' }),
+    });
+
+    await processMediaPosts(db, client, 'acc-1');
+
+    expect(client.publishMedia.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+      'story-1',
+      'story-2',
+      'story-3',
+    ]);
+    expect(updateMediaPost).toHaveBeenCalledWith(
+      db,
+      'post-1',
+      expect.objectContaining({ status: 'published', published_media_id: 'media-3' }),
+    );
+  });
+
+  it('story batch: never publishes a later frame while an earlier one is processing', async () => {
+    vi.mocked(getProcessingMediaPosts).mockResolvedValueOnce([
+      makePost({
+        post_type: 'story',
+        status: 'processing',
+        creation_id: 'story-1',
+        child_creation_ids: JSON.stringify(['story-1', 'story-2']),
+      }),
+    ] as any);
+    const client = makeClient({
+      getContainerStatus: vi.fn().mockResolvedValueOnce({ status_code: 'IN_PROGRESS' }),
+    });
+
+    await processMediaPosts(db, client, 'acc-1');
+
+    expect(client.getContainerStatus).toHaveBeenCalledTimes(1);
+    expect(client.getContainerStatus).toHaveBeenCalledWith('story-1');
+    expect(client.publishMedia).not.toHaveBeenCalled();
   });
 });
 

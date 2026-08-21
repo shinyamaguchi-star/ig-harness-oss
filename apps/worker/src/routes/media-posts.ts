@@ -22,6 +22,7 @@ import type { Env } from '../index.js';
 
 const POST_TYPES: MediaPostType[] = ['feed_image', 'carousel', 'reel', 'story'];
 const STATUSES: MediaPostStatus[] = ['scheduled', 'processing', 'published', 'failed', 'canceled'];
+const MAX_STORY_ITEMS = 20;
 
 function serializeMediaPost(row: MediaPost) {
   let media: MediaPostMediaItem[] = [];
@@ -85,7 +86,9 @@ export function validateMediaPostInput(
       if (media[0].type !== 'video') return 'reel requires a video';
       return null;
     case 'story':
-      if (media.length !== 1) return 'story requires exactly 1 media item';
+      if (media.length > MAX_STORY_ITEMS) {
+        return `story requires 1 to ${MAX_STORY_ITEMS} media items`;
+      }
       return null;
     case 'carousel':
       if (media.length < 2 || media.length > 10) {

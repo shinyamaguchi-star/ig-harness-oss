@@ -36,7 +36,7 @@ function acceptForType(postType: MediaPostType): string {
 function pickerLabelForType(postType: MediaPostType): string {
   if (postType === 'reel') return '動画を選択'
   if (postType === 'carousel') return '画像・動画を選択(2〜10枚)'
-  if (postType === 'story') return '画像または動画を選択'
+  if (postType === 'story') return '画像・動画を選択(1〜20件)'
   return '画像を選択'
 }
 
@@ -115,11 +115,23 @@ export default function PostsPage() {
 
   const handleFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return
+    const maxItems = postType === 'story' ? 20 : postType === 'carousel' ? 10 : 1
+    const selected = Array.from(files)
+    if (mediaItems.length + selected.length > maxItems) {
+      setFormError(
+        postType === 'story'
+          ? 'ストーリーは1回の予約につき20件まで選択できます'
+          : postType === 'carousel'
+            ? 'カルーセルは10件まで選択できます'
+            : 'この投稿形式で選択できるメディアは1件です',
+      )
+      return
+    }
     setUploading(true)
     setFormError('')
     try {
       const uploaded: MediaPostMediaItem[] = []
-      for (const file of Array.from(files)) {
+      for (const file of selected) {
         const { url } = await mediaPostsApi.uploadMedia(file)
         uploaded.push({ url, type: file.type.startsWith('video/') ? 'video' : 'image' })
       }
@@ -363,7 +375,7 @@ export default function PostsPage() {
             ref={fileInputRef}
             type="file"
             accept={acceptForType(postType)}
-            multiple={postType === 'carousel'}
+            multiple={postType === 'carousel' || postType === 'story'}
             onChange={(e) => {
               void handleFiles(e.target.files)
               // allow re-selecting the same file after removal
@@ -408,7 +420,7 @@ export default function PostsPage() {
                   key={`${item.url}-${i}`}
                   style={{
                     position: 'relative',
-                    padding: postType === 'carousel' ? 3 : 0,
+                    padding: postType === 'carousel' || postType === 'story' ? 3 : 0,
                     border: postType === 'carousel' && i === 0 ? '2px solid #E1306C' : '2px solid transparent',
                     borderRadius: 10,
                   }}
@@ -432,7 +444,12 @@ export default function PostsPage() {
                       表紙
                     </span>
                   )}
-                  {postType === 'carousel' && (
+                  {postType === 'story' && (
+                    <span style={{ position: 'absolute', left: 7, top: 7, width: 22, height: 22, borderRadius: 11, background: '#2563EB', color: 'white', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {i + 1}
+                    </span>
+                  )}
+                  {(postType === 'carousel' || postType === 'story') && (
                     <div style={{ display: 'flex', justifyContent: 'center', gap: 4, marginTop: 4 }}>
                       <button
                         type="button"
@@ -462,6 +479,12 @@ export default function PostsPage() {
           {postType === 'carousel' && mediaItems.length > 0 && (
             <p style={{ fontSize: 12, color: '#6B7280', margin: '0 0 12px' }}>
               一番左のメディアが投稿の表紙になります。矢印で順番を変更できます。
+            </p>
+          )}
+
+          {postType === 'story' && mediaItems.length > 0 && (
+            <p style={{ fontSize: 12, color: '#6B7280', margin: '0 0 12px' }}>
+              左から順に、それぞれ独立したストーリーとして連続公開します。矢印で順番を変更できます。
             </p>
           )}
 
@@ -687,8 +710,8 @@ export default function PostsPage() {
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
                       <span style={{ fontSize: 12, padding: '2px 10px', borderRadius: 10, background: badge.bg, color: badge.fg, fontWeight: 600 }}>{badge.label}</span>
                       <span style={{ fontSize: 13, color: '#374151' }}>{TYPE_LABELS[post.postType]}</span>
-                      {post.postType === 'carousel' && (
-                        <span style={{ fontSize: 12, color: '#9CA3AF' }}>{post.media.length}枚</span>
+                      {(post.postType === 'carousel' || post.postType === 'story') && (
+                        <span style={{ fontSize: 12, color: '#9CA3AF' }}>{post.media.length}件</span>
                       )}
                     </div>
                     {post.caption && (

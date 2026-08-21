@@ -29,9 +29,13 @@ describe('validateMediaPostInput', () => {
   it('rejects a reel with an image', () => {
     expect(validateMediaPostInput('reel', [img])).toMatch(/video/);
   });
-  it('accepts a story with image or video', () => {
+  it('accepts a story with one or multiple image/video frames', () => {
     expect(validateMediaPostInput('story', [img])).toBeNull();
     expect(validateMediaPostInput('story', [vid])).toBeNull();
+    expect(validateMediaPostInput('story', [img, vid, img])).toBeNull();
+  });
+  it('rejects a story with more than 20 frames', () => {
+    expect(validateMediaPostInput('story', Array(21).fill(img))).toMatch(/20/);
   });
   it('accepts a carousel with 2-10 items', () => {
     expect(validateMediaPostInput('carousel', [img, vid])).toBeNull();

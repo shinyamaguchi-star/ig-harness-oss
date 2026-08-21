@@ -72,18 +72,22 @@ async function startPost(
   post: MediaPost,
 ): Promise<boolean> {
   try {
+    const media = JSON.parse(post.media) as MediaPostMediaItem[];
     const limit = await igClient.getPublishingLimit();
     const total = limit.config?.quota_total ?? DEFAULT_QUOTA_TOTAL;
-    if (limit.quota_usage >= total) {
+    // A carousel uses one publishing slot, while every Story frame is an
+    // independent Instagram publication. Do not start a Story batch unless
+    // the whole batch fits; otherwise only part of it could be published.
+    const requiredSlots = post.post_type === 'story' ? media.length : 1;
+    if (limit.quota_usage + requiredSlots > total) {
       // Not a failure — quota is a rolling 24h window, so carry the post
       // over to the next cycle without touching status/attempt_count.
       await updateMediaPost(db, post.id, {
-        error: `publishing quota exhausted (${limit.quota_usage}/${total}); will retry next cycle`,
+        error: `publishing quota insufficient (${limit.quota_usage}/${total}, required=${requiredSlots}); will retry next cycle`,
       });
       return false;
     }
 
-    const media = JSON.parse(post.media) as MediaPostMediaItem[];
     let creationId: string;
     let childIds: string[] | null = null;
 
@@ -115,13 +119,20 @@ async function startPost(
       });
       creationId = created.id;
     } else if (post.post_type === 'story') {
-      const item = media[0];
-      const created = await igClient.createMediaContainer({
-        imageUrl: item.type === 'image' ? item.url : undefined,
-        videoUrl: item.type === 'video' ? item.url : undefined,
-        mediaType: 'STORIES',
-      });
-      creationId = created.id;
+      // Meta has no carousel-style multi-asset Story container. Create one
+      // container per frame and retain their selected order. advancePost()
+      // publishes them sequentially and never overtakes a video still being
+      // processed.
+      childIds = [];
+      for (const item of media) {
+        const created = await igClient.createMediaContainer({
+          imageUrl: item.type === 'image' ? item.url : undefined,
+          videoUrl: item.type === 'video' ? item.url : undefined,
+          mediaType: 'STORIES',
+        });
+        childIds.push(created.id);
+      }
+      creationId = childIds[0];
     } else {
       const created = await igClient.createMediaContainer({
         imageUrl: media[0].url,
@@ -158,6 +169,10 @@ async function advancePost(
     });
     return;
   }
+  if (post.post_type === 'story') {
+    await advanceStoryPost(db, igClient, post);
+    return;
+  }
   try {
     const status = await igClient.getContainerStatus(post.creation_id);
     if (status.status_code === 'FINISHED') {
@@ -185,6 +200,64 @@ async function advancePost(
       });
     }
     // IN_PROGRESS → leave for the next cron cycle (video encoding takes minutes).
+  } catch (err) {
+    await recordFailure(db, post, err);
+  }
+}
+
+/** Publish Story frames in the operator-selected order.
+ *
+ * A multi-frame Story is represented by multiple independent Meta containers.
+ * We stop at the first IN_PROGRESS frame so a later image can never overtake
+ * an earlier video. Already-PUBLISHED containers are safe recovery markers if
+ * the Worker stopped after Meta accepted a frame but before D1 was updated.
+ */
+async function advanceStoryPost(
+  db: D1Database,
+  igClient: InstagramClient,
+  post: MediaPost,
+): Promise<void> {
+  let containerIds: string[] = [post.creation_id!];
+  if (post.child_creation_ids) {
+    try {
+      const parsed = JSON.parse(post.child_creation_ids) as unknown;
+      if (
+        Array.isArray(parsed) &&
+        parsed.length > 0 &&
+        parsed.every((id) => typeof id === 'string' && id.length > 0)
+      ) {
+        containerIds = parsed;
+      }
+    } catch {
+      // Backwards compatibility: older single-frame rows have no child list.
+    }
+  }
+
+  let lastPublishedMediaId = post.published_media_id;
+  try {
+    for (let index = 0; index < containerIds.length; index += 1) {
+      const containerId = containerIds[index];
+      const status = await igClient.getContainerStatus(containerId);
+      if (status.status_code === 'IN_PROGRESS') return;
+      if (status.status_code === 'ERROR' || status.status_code === 'EXPIRED') {
+        await updateMediaPost(db, post.id, {
+          status: 'failed',
+          error: `story ${index + 1}/${containerIds.length} container ${status.status_code}: ${status.status ?? ''}`.trim(),
+        });
+        return;
+      }
+      if (status.status_code === 'PUBLISHED') continue;
+      if (status.status_code !== 'FINISHED') return;
+
+      const result = await igClient.publishMedia(containerId);
+      lastPublishedMediaId = result.id;
+    }
+
+    await updateMediaPost(db, post.id, {
+      status: 'published',
+      published_media_id: lastPublishedMediaId,
+      error: null,
+    });
   } catch (err) {
     await recordFailure(db, post, err);
   }

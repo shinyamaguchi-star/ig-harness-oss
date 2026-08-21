@@ -23,7 +23,7 @@ export interface MediaPost {
   status: MediaPostStatus;
   scheduled_at: string;
   creation_id: string | null;
-  /** JSON-encoded string[] of carousel child container ids */
+  /** JSON-encoded string[] of carousel children or ordered Story containers. */
   child_creation_ids: string | null;
   published_media_id: string | null;
   attempt_count: number;
