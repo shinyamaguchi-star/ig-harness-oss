@@ -277,7 +277,7 @@ export async function attachCampaignToMediaPost(
   postId: string,
   gateId: string,
   activationStatus: CampaignActivationStatus = 'pending',
-  autoActivate = false,
+  autoActivate = true,
 ): Promise<boolean> {
   const result = await db
     .prepare(
@@ -352,7 +352,7 @@ export async function replaceScheduledCampaignMediaPosts(
         db.prepare(
           `UPDATE media_posts
            SET campaign_gate_id = ?, campaign_activation_status = 'pending',
-               campaign_error = NULL, campaign_auto_activate = 0, updated_at = ?
+               campaign_error = NULL, campaign_auto_activate = 1, updated_at = ?
            WHERE id = ? AND account_id = ? AND status = 'scheduled'
              AND campaign_gate_id IS NULL`,
         ).bind(input.gateId, jstNow(), id, input.accountId),

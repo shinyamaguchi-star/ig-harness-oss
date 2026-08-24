@@ -10,6 +10,7 @@ import {
   type MediaPostMediaItem,
   type MediaPostType,
 } from '@/lib/api'
+import { convertReelCoverToJpeg } from '@/lib/reel-cover'
 import Header from '@/components/layout/header'
 
 const TYPE_LABELS: Record<MediaPostType, string> = {
@@ -152,7 +153,12 @@ export default function PostsPage() {
     setCoverUploading(true)
     setFormError('')
     try {
-      const { url } = await mediaPostsApi.uploadMedia(file)
+      const jpeg = await convertReelCoverToJpeg(file)
+      const uploaded = await mediaPostsApi.uploadMedia(jpeg)
+      if (uploaded.mimeType !== 'image/jpeg') {
+        throw new Error('表紙画像がJPEGとして保存されませんでした')
+      }
+      const { url } = uploaded
       setCoverUrl(url)
     } catch (err) {
       setFormError(err instanceof Error ? err.message : '表紙画像のアップロードに失敗しました')
@@ -543,7 +549,7 @@ export default function PostsPage() {
                         disabled={coverUploading}
                         style={{ padding: '8px 12px', border: '1px solid #D1D5DB', borderRadius: 8, background: 'white', color: '#374151', fontSize: 12, cursor: coverUploading ? 'default' : 'pointer' }}
                       >
-                        {coverUploading ? 'アップロード中…' : '画像を選択（JPG / PNG）'}
+                        {coverUploading ? 'JPEGへ変換してアップロード中…' : '画像を選択（JPG / PNG → JPEGへ自動変換）'}
                       </button>
                     )}
                   </div>

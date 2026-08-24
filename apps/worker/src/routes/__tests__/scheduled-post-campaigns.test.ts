@@ -4,6 +4,11 @@ vi.mock('@ig-harness/db', async (importOriginal) => {
   const original = await importOriginal<typeof import('@ig-harness/db')>();
   return {
     ...original,
+    createEngagementGate: vi.fn(),
+    setGateTargetPosts: vi.fn(),
+    getMediaPostById: vi.fn(),
+    attachCampaignToMediaPost: vi.fn(),
+    deleteEngagementGate: vi.fn(),
     getEngagementGate: vi.fn(),
     listMediaPosts: vi.fn(),
     replaceScheduledCampaignMediaPosts: vi.fn(),
@@ -15,6 +20,10 @@ vi.mock('../../lib/accounts.js', () => ({
 }));
 
 import {
+  createEngagementGate,
+  setGateTargetPosts,
+  getMediaPostById,
+  attachCampaignToMediaPost,
   getEngagementGate,
   listMediaPosts,
   replaceScheduledCampaignMediaPosts,
@@ -110,5 +119,58 @@ describe('PUT /api/engagement-gates/:id/scheduled-posts', () => {
 
     expect(response.status).toBe(409);
     expect(replaceScheduledCampaignMediaPosts).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/engagement-gates with a new scheduled campaign', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(resolveAccount).mockResolvedValue(account as any);
+    vi.mocked(getMediaPostById).mockResolvedValue(post('post-1') as any);
+    vi.mocked(createEngagementGate).mockResolvedValue({
+      id: 'gate-new',
+      account_id: account.id,
+      name: 'new scheduled campaign',
+      status: 'paused',
+      trigger_type: 'comment_on_post',
+      target_post_id: null,
+      trigger_keyword: '案内',
+      trigger_keywords: '["案内"]',
+    } as any);
+    vi.mocked(attachCampaignToMediaPost).mockResolvedValue(true);
+  });
+
+  it('keeps the new campaign paused before publish and enables post-publish activation', async () => {
+    const response = await engagementGates.fetch(
+      new Request('https://worker.example/api/engagement-gates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'new scheduled campaign',
+          trigger_type: 'comment_on_post',
+          trigger_keywords: ['案内'],
+          initial_dm_text: '最初のDM',
+          follow_reminder_dm_text: '確認DM',
+          reward_dm_text: '特典DM',
+          scheduled_media_post_id: 'post-1',
+        }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect(createEngagementGate).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ status: 'paused' }),
+    );
+    expect(setGateTargetPosts).toHaveBeenCalledWith(db, 'gate-new', []);
+    expect(attachCampaignToMediaPost).toHaveBeenCalledWith(
+      db,
+      'post-1',
+      'gate-new',
+      'pending',
+      true,
+    );
   });
 });

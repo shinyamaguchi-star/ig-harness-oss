@@ -215,7 +215,7 @@ describe('PATCH /api/media-posts/:id reservation editing', () => {
         caption: 'updated',
         campaign_gate_id: 'gate-2',
         campaign_activation_status: 'pending',
-        campaign_auto_activate: 0,
+        campaign_auto_activate: 1,
       }),
     );
   });
@@ -254,5 +254,50 @@ describe('PATCH /api/media-posts/:id reservation editing', () => {
     );
     expect(res.status).toBe(400);
     expect(dbMocks.updateScheduledMediaPost).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/media-posts scheduled campaign activation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    accountsMocks.resolveAccount.mockResolvedValue(ACCOUNT_B);
+    dbMocks.getEngagementGate.mockResolvedValue({
+      id: 'gate-existing',
+      account_id: 'account-B',
+      status: 'paused',
+      trigger_type: 'comment_on_post',
+      target_post_ids: [],
+    });
+    dbMocks.createMediaPost.mockImplementation(async (_db: unknown, input: any) => ({
+      ...POST_OWNED_BY_B,
+      campaign_gate_id: input.campaignGateId,
+      campaign_auto_activate: input.campaignAutoActivate ? 1 : 0,
+    }));
+  });
+
+  it('marks an existing campaign to activate after the scheduled post publishes', async () => {
+    const res = await mediaPosts.fetch(
+      new Request('https://worker.example.com/api/media-posts?account_id=account-B', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          post_type: 'reel',
+          media: [{ url: 'https://example.com/reel.mp4', type: 'video' }],
+          scheduled_at: '2026-01-02T18:00:00+09:00',
+          campaign_gate_id: 'gate-existing',
+        }),
+      }),
+      makeEnv(),
+      executionCtx,
+    );
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createMediaPost).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        campaignGateId: 'gate-existing',
+        campaignAutoActivate: true,
+      }),
+    );
   });
 });

@@ -14,7 +14,7 @@ vi.mock('@ig-harness/db', async (importOriginal) => {
     getMediaPostById: vi.fn().mockResolvedValue(null),
     getEngagementGate: vi.fn().mockResolvedValue(null),
     addGateTargetPost: vi.fn().mockResolvedValue(undefined),
-    updateEngagementGate: vi.fn().mockResolvedValue(undefined),
+    updateEngagementGate: vi.fn().mockResolvedValue(true),
     updateMediaPost: vi.fn().mockResolvedValue(null),
   };
 });
@@ -74,7 +74,7 @@ beforeEach(() => {
   vi.mocked(getPendingCampaignMediaPosts).mockResolvedValue([]);
   vi.mocked(getEngagementGate).mockResolvedValue(null);
   vi.mocked(addGateTargetPost).mockResolvedValue(undefined);
-  vi.mocked(updateEngagementGate).mockResolvedValue(undefined);
+  vi.mocked(updateEngagementGate).mockResolvedValue(true);
   vi.mocked(updateMediaPost).mockResolvedValue(null);
 });
 
@@ -336,7 +336,7 @@ describe('processMediaPosts — processing posts', () => {
     );
   });
 
-  it('appends to an existing paused campaign without resuming it', async () => {
+  it('activates an existing paused campaign after publish, including legacy auto flags', async () => {
     const processing = makePost({
       status: 'processing',
       creation_id: 'container-1',
@@ -354,7 +354,11 @@ describe('processMediaPosts — processing posts', () => {
     await processMediaPosts(db, makeClient(), 'acc-1');
 
     expect(addGateTargetPost).toHaveBeenCalledWith(db, 'gate-1', 'media-100');
-    expect(updateEngagementGate).not.toHaveBeenCalled();
+    expect(updateEngagementGate).toHaveBeenCalledWith(
+      db,
+      'gate-1',
+      expect.objectContaining({ status: 'active' }),
+    );
   });
 
   it('keeps an already-published post published when campaign activation fails', async () => {

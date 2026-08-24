@@ -597,8 +597,8 @@ export const mediaPostsApi = {
     return res.data
   },
   /** Binary upload (images AND videos) to /api/images — returns the public URL. */
-  uploadMedia: async (file: File): Promise<{ url: string; key: string }> => {
-    const res = await fetchApi<ApiResponse<{ url: string; key: string }>>('/api/images', {
+  uploadMedia: async (file: File): Promise<{ url: string; key: string; mimeType: string; size: number }> => {
+    const res = await fetchApi<ApiResponse<{ url: string; key: string; mimeType: string; size: number }>>('/api/images', {
       method: 'POST',
       headers: { 'Content-Type': file.type },
       body: file,

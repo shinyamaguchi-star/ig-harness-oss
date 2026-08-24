@@ -319,19 +319,20 @@ export async function updateEngagementGate(
   db: D1Database,
   id: string,
   patch: Partial<Omit<EngagementGate, 'id' | 'created_at' | 'updated_at'>>,
-): Promise<void> {
+): Promise<boolean> {
   const fields = Object.keys(patch).filter((f) =>
     (UPDATABLE_GATE_FIELDS as readonly string[]).includes(f),
   );
-  if (fields.length === 0) return;
+  if (fields.length === 0) return false;
   const setClause = fields.map((f) => `${f} = ?`).join(', ');
   const values = fields.map((f) => (patch as Record<string, unknown>)[f]);
-  await db
+  const result = await db
     .prepare(
       `UPDATE engagement_gates SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now')) WHERE id = ?`,
     )
     .bind(...values, id)
     .run();
+  return (result.meta.changes ?? 0) === 1;
 }
 
 export async function deleteEngagementGate(

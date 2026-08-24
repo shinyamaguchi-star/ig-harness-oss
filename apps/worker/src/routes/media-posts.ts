@@ -244,7 +244,10 @@ mediaPosts.post('/api/media-posts', async (c) => {
     // client-sent "Z" timestamp must not be stored as-is (see Task 1 note).
     scheduledAt: normalizedScheduledAt ?? jstNow(),
     campaignGateId: body.campaign_gate_id ?? null,
-    campaignAutoActivate: false,
+    // Existing and newly-created campaigns use the same safe lifecycle:
+    // remain paused while the Instagram post has no real media id, then
+    // activate only after publication succeeds and the target id is added.
+    campaignAutoActivate: Boolean(body.campaign_gate_id),
   });
 
   if (immediate) {
@@ -346,7 +349,6 @@ mediaPosts.patch('/api/media-posts/:id', async (c) => {
     if (checked.error) return c.json({ success: false, error: checked.error }, 400);
   }
 
-  const campaignChanged = campaignWasPatched && nextCampaignId !== post.campaign_gate_id;
   const updated = await updateScheduledMediaPost(c.env.DB, post.id, account.id, {
     post_type: nextType,
     media: JSON.stringify(nextMedia),
@@ -357,7 +359,7 @@ mediaPosts.patch('/api/media-posts/:id', async (c) => {
     campaign_gate_id: nextCampaignId,
     campaign_activation_status: nextCampaignId ? 'pending' : null,
     campaign_error: null,
-    campaign_auto_activate: campaignChanged ? 0 : post.campaign_auto_activate,
+    campaign_auto_activate: nextCampaignId ? 1 : 0,
   });
   if (!updated) {
     return c.json({ success: false, error: 'the post started processing; reload before editing' }, 409);
