@@ -64,6 +64,7 @@ export default function PostsPage() {
   const [campaigns, setCampaigns] = useState<EngagementGate[]>([])
 
   // form state
+  const [title, setTitle] = useState('')
   const [postType, setPostType] = useState<MediaPostType>('feed_image')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const coverInputRef = useRef<HTMLInputElement>(null)
@@ -185,6 +186,7 @@ export default function PostsPage() {
 
   const resetForm = () => {
     setEditingId(null)
+    setTitle('')
     setPostType('feed_image')
     setMediaItems([])
     setCaption('')
@@ -199,6 +201,7 @@ export default function PostsPage() {
   const beginEdit = (post: MediaPostApi) => {
     if (post.status !== 'scheduled') return
     setEditingId(post.id)
+    setTitle(post.title ?? '')
     setPostType(post.postType)
     setMediaItems(post.media)
     setCaption(post.caption ?? '')
@@ -265,6 +268,7 @@ export default function PostsPage() {
     try {
       const campaignGateId = campaignMode === 'existing' ? selectedCampaignId : null
       const payload = {
+        title: title.trim() || null,
         postType,
         media: mediaItems,
         caption: caption || null,
@@ -281,6 +285,7 @@ export default function PostsPage() {
           })
         : await mediaPostsApi.create({
             ...payload,
+            title: payload.title ?? undefined,
             caption: payload.caption ?? undefined,
             coverUrl: payload.coverUrl ?? undefined,
             thumbOffsetMs: payload.thumbOffsetMs ?? undefined,
@@ -347,6 +352,23 @@ export default function PostsPage() {
               </button>
             )}
           </div>
+
+          <label style={{ display: 'block', marginBottom: 16 }}>
+            <span style={{ display: 'block', marginBottom: 6, fontSize: 13, fontWeight: 600, color: '#374151' }}>
+              投稿タイトル <span style={{ fontWeight: 400, color: '#9CA3AF' }}>（管理用・Instagramには表示されません）</span>
+            </span>
+            <input
+              type="text"
+              value={title}
+              maxLength={100}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="例：8月25日 復縁キャンペーン用リール"
+              style={{ width: '100%', border: '1px solid #D1D5DB', borderRadius: 8, padding: '9px 10px', fontSize: 14 }}
+            />
+            <span style={{ display: 'block', marginTop: 4, textAlign: 'right', fontSize: 11, color: '#9CA3AF' }}>
+              {title.length}/100
+            </span>
+          </label>
 
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             {(Object.keys(TYPE_LABELS) as MediaPostType[]).map((t) => (
@@ -713,6 +735,9 @@ export default function PostsPage() {
                     <div style={{ width: 72, height: 72, borderRadius: 8, background: '#F3F4F6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>🎬</div>
                   )}
                   <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontSize: 14, fontWeight: 700, color: post.title ? '#111827' : '#9CA3AF', margin: '0 0 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {post.title || 'タイトル未設定'}
+                    </p>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
                       <span style={{ fontSize: 12, padding: '2px 10px', borderRadius: 10, background: badge.bg, color: badge.fg, fontWeight: 600 }}>{badge.label}</span>
                       <span style={{ fontSize: 13, color: '#374151' }}>{TYPE_LABELS[post.postType]}</span>

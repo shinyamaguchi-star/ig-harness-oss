@@ -63,6 +63,7 @@ const ACCOUNT_B = {
 const POST_OWNED_BY_B = {
   id: 'post-1',
   account_id: 'account-B',
+  title: null,
   post_type: 'feed_image',
   media: JSON.stringify([{ url: 'https://example.com/post.jpg', type: 'image' }]),
   caption: null,
@@ -281,6 +282,7 @@ describe('POST /api/media-posts scheduled campaign activation', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          title: '年末キャンペーン用リール',
           post_type: 'reel',
           media: [{ url: 'https://example.com/reel.mp4', type: 'video' }],
           scheduled_at: '2026-01-02T18:00:00+09:00',
@@ -295,6 +297,7 @@ describe('POST /api/media-posts scheduled campaign activation', () => {
     expect(dbMocks.createMediaPost).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
+        title: '年末キャンペーン用リール',
         campaignGateId: 'gate-existing',
         campaignAutoActivate: true,
       }),

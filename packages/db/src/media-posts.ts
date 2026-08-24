@@ -12,6 +12,8 @@ export interface MediaPostMediaItem {
 export interface MediaPost {
   id: string;
   account_id: string;
+  /** Operator-only label. Never sent to Instagram. */
+  title: string | null;
   post_type: MediaPostType;
   /** JSON-encoded MediaPostMediaItem[] */
   media: string;
@@ -41,6 +43,7 @@ export interface MediaPost {
 
 export interface CreateMediaPostInput {
   accountId: string;
+  title?: string | null;
   postType: MediaPostType;
   media: MediaPostMediaItem[];
   caption?: string | null;
@@ -58,17 +61,18 @@ export async function createMediaPost(
   const now = jstNow();
   const result = await db
     .prepare(
-      `INSERT INTO media_posts
-         (id, account_id, post_type, media, caption, cover_url, thumb_offset_ms, status, scheduled_at,
+        `INSERT INTO media_posts
+         (id, account_id, title, post_type, media, caption, cover_url, thumb_offset_ms, status, scheduled_at,
           creation_id, child_creation_ids, published_media_id, attempt_count,
           error, campaign_gate_id, campaign_activation_status, campaign_error,
           campaign_auto_activate, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, NULL, NULL, NULL, 0, NULL, ?, ?, NULL, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, NULL, NULL, NULL, 0, NULL, ?, ?, NULL, ?, ?, ?)
        RETURNING *`,
     )
     .bind(
       crypto.randomUUID(),
       input.accountId,
+      input.title ?? null,
       input.postType,
       JSON.stringify(input.media),
       input.caption ?? null,
@@ -158,6 +162,7 @@ export type UpdateMediaPostInput = Partial<
     | 'published_media_id'
     | 'attempt_count'
     | 'error'
+    | 'title'
     | 'post_type'
     | 'media'
     | 'caption'
@@ -185,6 +190,7 @@ export async function updateMediaPost(
     'published_media_id',
     'attempt_count',
     'error',
+    'title',
     'post_type',
     'media',
     'caption',
@@ -222,6 +228,7 @@ export async function updateScheduledMediaPost(
   accountId: string,
   updates: Pick<
     UpdateMediaPostInput,
+    | 'title'
     | 'post_type'
     | 'media'
     | 'caption'
@@ -237,6 +244,7 @@ export async function updateScheduledMediaPost(
   const fields: string[] = [];
   const values: unknown[] = [];
   for (const key of [
+    'title',
     'post_type',
     'media',
     'caption',

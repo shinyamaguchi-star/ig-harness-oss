@@ -1,28 +1,19 @@
 import {
   createEngagementGate,
-  createRichMessage,
   deleteEngagementGate,
-  deleteRichMessage,
   getRichMessage,
   setGateTargetPosts,
   type EngagementGate,
-  type RichMessageKind,
 } from '@ig-harness/db';
-
-const SLOT_LABELS: Record<RichMessageKind, string> = {
-  cta: '最初のDM',
-  reward: '特典DM',
-  reminder: 'フォロー未達DM',
-  generic: 'メッセージ',
-};
 
 /**
  * Duplicate one campaign as a safe, independent draft.
  *
  * - The new gate is always paused to prevent accidental double delivery.
  * - Delivery history and analytics are not copied.
- * - Referenced rich messages are cloned so editing/deleting a template later
- *   cannot unexpectedly affect both the original and its copy.
+ * - Referenced rich messages are reused by default. The campaign editor uses
+ *   copy-on-write: only a DM slot that the operator changes creates a new
+ *   rich message, while unchanged slots keep these shared ids.
  * - The LINE tracked-link cache is intentionally cleared; the copy gets its
  *   own gate-specific link on first delivery.
  */
@@ -32,11 +23,10 @@ export async function copyEngagementGate(
   accountId: string,
 ): Promise<EngagementGate> {
   const copyName = `${source.name}（コピー）`;
-  const clonedMessageIds = new Map<string, string>();
-  const originalMessages = new Map<string, NonNullable<Awaited<ReturnType<typeof getRichMessage>>>>();
 
-  // Validate every reference before writing anything. If the source has a
-  // broken template id, this prevents half-created template copies.
+  // Validate every shared reference before writing anything. If the source
+  // has a broken template id, this prevents a copied campaign that cannot
+  // send one of its DM slots.
   const referencedIds = Array.from(
     new Set(
       [
@@ -49,29 +39,7 @@ export async function copyEngagementGate(
   for (const id of referencedIds) {
     const message = await getRichMessage(db, id);
     if (!message) throw new Error(`参照中のDMテンプレートが見つかりません: ${id}`);
-    originalMessages.set(id, message);
   }
-
-  const cloneMessage = async (id: string | null): Promise<string | null> => {
-    if (!id) return null;
-    const alreadyCloned = clonedMessageIds.get(id);
-    if (alreadyCloned) return alreadyCloned;
-    const original = originalMessages.get(id)!;
-    const cloned = await createRichMessage(db, {
-      name: `${copyName} / ${SLOT_LABELS[original.kind]}`,
-      kind: original.kind,
-      blocks: original.blocks,
-      accountId,
-    });
-    clonedMessageIds.set(id, cloned.id);
-    return cloned.id;
-  };
-
-  // Sequential calls let the id map reuse one clone if a source campaign
-  // intentionally references the same template in more than one slot.
-  const initialMessageId = await cloneMessage(source.initial_dm_rich_message_id);
-  const rewardMessageId = await cloneMessage(source.reward_dm_rich_message_id);
-  const reminderMessageId = await cloneMessage(source.follow_reminder_dm_rich_message_id);
 
   const targetIds =
     source.target_post_ids && source.target_post_ids.length > 0
@@ -97,9 +65,9 @@ export async function copyEngagementGate(
       reward_dm_text: source.reward_dm_text,
       reward_url: source.reward_url,
       max_loops: source.max_loops,
-      initial_dm_rich_message_id: initialMessageId,
-      reward_dm_rich_message_id: rewardMessageId,
-      follow_reminder_dm_rich_message_id: reminderMessageId,
+      initial_dm_rich_message_id: source.initial_dm_rich_message_id,
+      reward_dm_rich_message_id: source.reward_dm_rich_message_id,
+      follow_reminder_dm_rich_message_id: source.follow_reminder_dm_rich_message_id,
       comment_reply_text: source.comment_reply_text,
       followup_dm_sequence: source.followup_dm_sequence,
       line_connection_id: source.line_connection_id,
@@ -115,9 +83,6 @@ export async function copyEngagementGate(
   } catch (error) {
     // Best-effort rollback of records created by this operation only.
     if (copied) await deleteEngagementGate(db, copied.id).catch(() => undefined);
-    for (const clonedId of clonedMessageIds.values()) {
-      await deleteRichMessage(db, clonedId).catch(() => undefined);
-    }
     throw error;
   }
 }

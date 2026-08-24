@@ -6,12 +6,26 @@
 import { describe, it, expect } from 'vitest';
 import {
   validateMediaPostInput,
+  validatePostTitle,
   validateReelCoverInput,
   normalizeScheduledAt,
 } from '../media-posts.js';
 
 const img = { url: 'https://example.com/a.jpg', type: 'image' as const };
 const vid = { url: 'https://example.com/v.mp4', type: 'video' as const };
+
+describe('validatePostTitle', () => {
+  it('accepts an optional management title up to 100 characters', () => {
+    expect(validatePostTitle(undefined)).toBeNull();
+    expect(validatePostTitle('8月25日 復縁キャンペーン用リール')).toBeNull();
+    expect(validatePostTitle('あ'.repeat(100))).toBeNull();
+  });
+
+  it('rejects non-string and overlong titles', () => {
+    expect(validatePostTitle(123)).toMatch(/string/);
+    expect(validatePostTitle('あ'.repeat(101))).toMatch(/100/);
+  });
+});
 
 describe('validateMediaPostInput', () => {
   it('accepts a single-image feed post', () => {

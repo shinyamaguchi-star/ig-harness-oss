@@ -23,6 +23,7 @@ import type { Env } from '../index.js';
 const POST_TYPES: MediaPostType[] = ['feed_image', 'carousel', 'reel', 'story'];
 const STATUSES: MediaPostStatus[] = ['scheduled', 'processing', 'published', 'failed', 'canceled'];
 const MAX_STORY_ITEMS = 20;
+const MAX_POST_TITLE_LENGTH = 100;
 
 function serializeMediaPost(row: MediaPost) {
   let media: MediaPostMediaItem[] = [];
@@ -34,6 +35,7 @@ function serializeMediaPost(row: MediaPost) {
   return {
     id: row.id,
     accountId: row.account_id,
+    title: row.title ?? null,
     postType: row.post_type,
     media,
     caption: row.caption,
@@ -52,6 +54,17 @@ function serializeMediaPost(row: MediaPost) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+/** Validate the operator-only post label. It is stored for the Admin UI and
+ * is never included in an Instagram API request. */
+export function validatePostTitle(title: unknown): string | null {
+  if (title === undefined || title === null) return null;
+  if (typeof title !== 'string') return 'title must be a string';
+  if (title.trim().length > MAX_POST_TITLE_LENGTH) {
+    return `title must be ${MAX_POST_TITLE_LENGTH} characters or fewer`;
+  }
+  return null;
 }
 
 /**
@@ -191,6 +204,7 @@ mediaPosts.post('/api/media-posts', async (c) => {
   const account = await resolveAccount(c);
   if (!account) return c.json({ success: false, error: 'account not found' }, 404);
   let body: {
+    title?: string | null;
     post_type?: MediaPostType;
     media?: MediaPostMediaItem[];
     caption?: string;
@@ -206,6 +220,8 @@ mediaPosts.post('/api/media-posts', async (c) => {
   }
   const validationError = validateMediaPostInput(body.post_type as MediaPostType, body.media ?? []);
   if (validationError) return c.json({ success: false, error: validationError }, 400);
+  const titleValidationError = validatePostTitle(body.title);
+  if (titleValidationError) return c.json({ success: false, error: titleValidationError }, 400);
   const coverValidationError = validateReelCoverInput(
     body.post_type as MediaPostType,
     body.cover_url,
@@ -235,6 +251,7 @@ mediaPosts.post('/api/media-posts', async (c) => {
   }
   const post = await createMediaPost(c.env.DB, {
     accountId: account.id,
+    title: body.title?.trim() || null,
     postType: body.post_type as MediaPostType,
     media: body.media as MediaPostMediaItem[],
     caption: body.caption ?? null,
@@ -299,6 +316,7 @@ mediaPosts.patch('/api/media-posts/:id', async (c) => {
   }
 
   let body: {
+    title?: string | null;
     post_type?: MediaPostType;
     media?: MediaPostMediaItem[];
     caption?: string | null;
@@ -312,6 +330,9 @@ mediaPosts.patch('/api/media-posts/:id', async (c) => {
   } catch {
     return c.json({ success: false, error: 'invalid JSON body' }, 400);
   }
+
+  const titleValidationError = validatePostTitle(body.title);
+  if (titleValidationError) return c.json({ success: false, error: titleValidationError }, 400);
 
   let currentMedia: MediaPostMediaItem[] = [];
   try {
@@ -350,6 +371,12 @@ mediaPosts.patch('/api/media-posts/:id', async (c) => {
   }
 
   const updated = await updateScheduledMediaPost(c.env.DB, post.id, account.id, {
+    title:
+      body.title !== undefined
+        ? typeof body.title === 'string' && body.title.trim()
+          ? body.title.trim()
+          : null
+        : post.title,
     post_type: nextType,
     media: JSON.stringify(nextMedia),
     caption: body.caption !== undefined ? body.caption : post.caption,

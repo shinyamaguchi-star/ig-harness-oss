@@ -501,6 +501,8 @@ export interface MediaPostMediaItem {
 export interface MediaPostApi {
   id: string
   accountId: string
+  /** Management-only label; never published to Instagram. */
+  title: string | null
   postType: MediaPostType
   media: MediaPostMediaItem[]
   caption: string | null
@@ -527,6 +529,7 @@ export const mediaPostsApi = {
     return res.data ?? []
   },
   create: async (input: {
+    title?: string
     postType: MediaPostType
     media: MediaPostMediaItem[]
     caption?: string
@@ -538,6 +541,7 @@ export const mediaPostsApi = {
     const res = await fetchApi<ApiResponse<MediaPostApi>>('/api/media-posts', {
       method: 'POST',
       body: JSON.stringify({
+        title: input.title,
         post_type: input.postType,
         media: input.media,
         caption: input.caption,
@@ -556,6 +560,7 @@ export const mediaPostsApi = {
     return res.data
   },
   update: async (id: string, input: {
+    title?: string | null
     postType: MediaPostType
     media: MediaPostMediaItem[]
     caption?: string | null
@@ -567,6 +572,7 @@ export const mediaPostsApi = {
     const res = await fetchApi<ApiResponse<MediaPostApi>>(`/api/media-posts/${id}`, {
       method: 'PATCH',
       body: JSON.stringify({
+        title: input.title,
         post_type: input.postType,
         media: input.media,
         caption: input.caption,

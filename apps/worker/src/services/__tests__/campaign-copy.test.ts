@@ -5,9 +5,7 @@ vi.mock('@ig-harness/db', async (importOriginal) => {
   return {
     ...original,
     createEngagementGate: vi.fn(),
-    createRichMessage: vi.fn(),
     deleteEngagementGate: vi.fn().mockResolvedValue(undefined),
-    deleteRichMessage: vi.fn().mockResolvedValue(undefined),
     getRichMessage: vi.fn(),
     setGateTargetPosts: vi.fn().mockResolvedValue(undefined),
   };
@@ -15,9 +13,7 @@ vi.mock('@ig-harness/db', async (importOriginal) => {
 
 import {
   createEngagementGate,
-  createRichMessage,
   deleteEngagementGate,
-  deleteRichMessage,
   getRichMessage,
   setGateTargetPosts,
   type EngagementGate,
@@ -69,14 +65,6 @@ beforeEach(() => {
     created_at: '',
     updated_at: '',
   }));
-  vi.mocked(createRichMessage).mockImplementation(async (_db, data) => ({
-    id: `copied-${data.kind}`,
-    name: data.name,
-    kind: data.kind,
-    blocks: data.blocks,
-    created_at: '',
-    updated_at: '',
-  }));
   vi.mocked(createEngagementGate).mockImplementation(async (_db, input) => ({
     id: 'copied-gate',
     created_at: '',
@@ -86,23 +74,19 @@ beforeEach(() => {
 });
 
 describe('copyEngagementGate', () => {
-  it('creates a paused independent copy without delivery history or link cache', async () => {
+  it('creates a paused copy that reuses unchanged DM templates', async () => {
     const copied = await copyEngagementGate(db, sourceGate(), 'account-1');
 
-    expect(createRichMessage).toHaveBeenCalledTimes(3);
-    expect(createRichMessage).toHaveBeenCalledWith(
-      db,
-      expect.objectContaining({ accountId: 'account-1', kind: 'cta' }),
-    );
+    expect(getRichMessage).toHaveBeenCalledTimes(3);
     expect(createEngagementGate).toHaveBeenCalledWith(
       db,
       expect.objectContaining({
         name: 'プレゼント企画（コピー）',
         status: 'paused',
         trigger_keywords: JSON.stringify(['欲しい', '希望']),
-        initial_dm_rich_message_id: 'copied-cta',
-        reward_dm_rich_message_id: 'copied-reward',
-        follow_reminder_dm_rich_message_id: 'copied-reminder',
+        initial_dm_rich_message_id: 'rm-cta',
+        reward_dm_rich_message_id: 'rm-reward',
+        follow_reminder_dm_rich_message_id: 'rm-reminder',
         line_tracked_link_short: null,
         accountId: 'account-1',
       }),
@@ -116,7 +100,7 @@ describe('copyEngagementGate', () => {
     expect(copied.target_post_ids).toEqual(['post-1', 'post-2']);
   });
 
-  it('clones one shared template only once and reuses the cloned id', async () => {
+  it('keeps one shared template id when the source intentionally reuses it', async () => {
     const copied = await copyEngagementGate(
       db,
       sourceGate({
@@ -128,10 +112,9 @@ describe('copyEngagementGate', () => {
     );
 
     expect(getRichMessage).toHaveBeenCalledTimes(1);
-    expect(createRichMessage).toHaveBeenCalledTimes(1);
-    expect(copied.initial_dm_rich_message_id).toBe('copied-cta');
-    expect(copied.reward_dm_rich_message_id).toBe('copied-cta');
-    expect(copied.follow_reminder_dm_rich_message_id).toBe('copied-cta');
+    expect(copied.initial_dm_rich_message_id).toBe('rm-shared');
+    expect(copied.reward_dm_rich_message_id).toBe('rm-shared');
+    expect(copied.follow_reminder_dm_rich_message_id).toBe('rm-shared');
   });
 
   it('fails instead of creating a broken copy when a referenced template is missing', async () => {
@@ -151,11 +134,10 @@ describe('copyEngagementGate', () => {
     await expect(copyEngagementGate(db, sourceGate(), 'account-1')).rejects.toThrow(
       /DMテンプレートが見つかりません/,
     );
-    expect(createRichMessage).not.toHaveBeenCalled();
     expect(createEngagementGate).not.toHaveBeenCalled();
   });
 
-  it('removes newly cloned templates if gate creation fails', async () => {
+  it('does not mutate or delete shared templates if gate creation fails', async () => {
     vi.mocked(createEngagementGate).mockRejectedValueOnce(new Error('D1 write failed'));
 
     await expect(copyEngagementGate(db, sourceGate(), 'account-1')).rejects.toThrow(
@@ -163,9 +145,6 @@ describe('copyEngagementGate', () => {
     );
 
     expect(deleteEngagementGate).not.toHaveBeenCalled();
-    expect(deleteRichMessage).toHaveBeenCalledTimes(3);
-    expect(deleteRichMessage).toHaveBeenCalledWith(db, 'copied-cta');
-    expect(deleteRichMessage).toHaveBeenCalledWith(db, 'copied-reward');
-    expect(deleteRichMessage).toHaveBeenCalledWith(db, 'copied-reminder');
+    expect(getRichMessage).toHaveBeenCalledTimes(3);
   });
 });

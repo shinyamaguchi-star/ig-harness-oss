@@ -24,6 +24,7 @@ import Header from '@/components/layout/header'
 import ImagePickerModal from '@/components/image-picker-modal'
 import MediaPickerModal from '@/components/media-picker-modal'
 import RichMessagePreview from '@/components/rich-message-preview'
+import { richMessageToEditableDraft } from '@/lib/rich-message-draft'
 
 const ACCENT = '#E1306C'
 
@@ -338,6 +339,57 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
   }, [])
 
   const findMessage = (id: string) => existingMessages.find((m) => m.id === id)
+
+  /** Switch one DM slot between shared-template mode and copy-on-write mode.
+   * When editing a copied campaign, choosing "change this DM" seeds the
+   * inline fields from the currently selected template. Saving then creates
+   * only this slot's new template; every unchanged slot keeps its shared id. */
+  const changeSlotMode = (
+    slot: 'cta' | 'reward' | 'reminder',
+    mode: SlotMode,
+  ) => {
+    setS((current) => {
+      if (mode === 'existing') {
+        if (slot === 'cta') return { ...current, ctaMode: mode }
+        if (slot === 'reward') return { ...current, rewardMode: mode }
+        return { ...current, reminderMode: mode }
+      }
+
+      const templateId =
+        slot === 'cta'
+          ? current.ctaExistingId
+          : slot === 'reward'
+            ? current.rewardExistingId
+            : current.reminderExistingId
+      const template = findMessage(templateId)
+      const draft = template ? richMessageToEditableDraft(template) : null
+
+      if (slot === 'cta') {
+        return {
+          ...current,
+          ctaMode: mode,
+          ctaText: draft?.text || current.ctaText,
+          ctaImageUrl: draft ? draft.imageUrl : current.ctaImageUrl,
+          ctaButtonLabel: draft?.buttonLabel || current.ctaButtonLabel,
+        }
+      }
+      if (slot === 'reward') {
+        return {
+          ...current,
+          rewardMode: mode,
+          rewardText: draft?.text || current.rewardText,
+          rewardImageUrl: draft ? draft.imageUrl : current.rewardImageUrl,
+          rewardButtonLabel: draft?.buttonLabel || current.rewardButtonLabel,
+        }
+      }
+      return {
+        ...current,
+        reminderMode: mode,
+        reminderText: draft?.text || current.reminderText,
+        reminderButtonLabel: draft?.buttonLabel || current.reminderButtonLabel,
+      }
+    })
+  }
 
   // First-mount setup: hydrate from existingGate in edit mode, else drop a
   // default campaign name so operators don't stare at a blank 名前 field.
@@ -658,7 +710,7 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
 
       {showCopyNotice && (
         <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-          キャンペーンを停止中でコピーしました。名前・対象投稿・キーワード・DM内容を確認して保存し、詳細画面で「再開」を押すと稼働します。
+          キャンペーンを停止中でコピーしました。DMは元のテンプレートを共有しているため、このまま保存してもテンプレートは増えません。変更したいDMだけ「このDMだけ変更」を選ぶと、そのDMだけコピー先専用として保存されます。
         </div>
       )}
 
@@ -979,8 +1031,9 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
 
             <SlotModeToggle
               mode={s.ctaMode}
-              onChange={(m) => update('ctaMode', m)}
+              onChange={(m) => changeSlotMode('cta', m)}
               existingCount={messagesByKind('cta').length}
+              copyOnWrite={isEdit}
             />
 
             {s.ctaMode === 'existing' ? (
@@ -1044,8 +1097,9 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                 <h3 className="text-xs font-semibold text-gray-700 mb-2">フォロー未達の人に送るDM</h3>
                 <SlotModeToggle
                   mode={s.reminderMode}
-                  onChange={(m) => update('reminderMode', m)}
+                  onChange={(m) => changeSlotMode('reminder', m)}
                   existingCount={messagesByKind('reminder').length}
+                  copyOnWrite={isEdit}
                 />
                 {s.reminderMode === 'existing' ? (
                   <ExistingMessagePicker
@@ -1086,8 +1140,9 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
 
             <SlotModeToggle
               mode={s.rewardMode}
-              onChange={(m) => update('rewardMode', m)}
+              onChange={(m) => changeSlotMode('reward', m)}
               existingCount={messagesByKind('reward').length}
+              copyOnWrite={isEdit}
             />
 
             {s.rewardMode === 'existing' ? (
@@ -1526,36 +1581,51 @@ function SlotModeToggle({
   mode,
   onChange,
   existingCount,
+  copyOnWrite = false,
 }: {
   mode: SlotMode
   onChange: (m: SlotMode) => void
   existingCount: number
+  copyOnWrite?: boolean
 }) {
   return (
-    <div className="flex gap-2 mb-2">
-      <button
-        type="button"
-        onClick={() => onChange('new')}
-        className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium border ${
-          mode === 'new'
-            ? 'border-[#E1306C] text-[#E1306C] bg-pink-50'
-            : 'border-gray-200 text-gray-600 hover:bg-gray-50'
-        }`}
-      >
-        📝 新しく作る
-      </button>
-      <button
-        type="button"
-        onClick={() => onChange('existing')}
-        disabled={existingCount === 0}
-        className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium border disabled:opacity-40 disabled:cursor-not-allowed ${
-          mode === 'existing'
-            ? 'border-[#E1306C] text-[#E1306C] bg-pink-50'
-            : 'border-gray-200 text-gray-600 hover:bg-gray-50'
-        }`}
-      >
-        📂 作り置きから選ぶ{existingCount > 0 ? ` (${existingCount})` : ''}
-      </button>
+    <div className="mb-2">
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => onChange('new')}
+          className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium border ${
+            mode === 'new'
+              ? 'border-[#E1306C] text-[#E1306C] bg-pink-50'
+              : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+          }`}
+        >
+          {copyOnWrite ? '✏️ このDMだけ変更' : '📝 新しく作る'}
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange('existing')}
+          disabled={existingCount === 0}
+          className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium border disabled:opacity-40 disabled:cursor-not-allowed ${
+            mode === 'existing'
+              ? 'border-[#E1306C] text-[#E1306C] bg-pink-50'
+              : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+          }`}
+        >
+          {copyOnWrite ? '✓ 変更しない／作り置きから選ぶ' : '📂 作り置きから選ぶ'}
+          {existingCount > 0 ? ` (${existingCount})` : ''}
+        </button>
+      </div>
+      {copyOnWrite && mode === 'new' && (
+        <p className="mt-2 text-[11px] text-blue-700">
+          保存すると、このDMだけコピー先専用の新しいテンプレートになります。ほかのDMと元のキャンペーンには影響しません。
+        </p>
+      )}
+      {copyOnWrite && mode === 'existing' && (
+        <p className="mt-2 text-[11px] text-gray-500">
+          選択中のテンプレートをそのまま再利用します。新しいテンプレートは作成されません。
+        </p>
+      )}
     </div>
   )
 }

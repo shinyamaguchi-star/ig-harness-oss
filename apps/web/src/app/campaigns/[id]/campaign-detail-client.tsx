@@ -182,7 +182,7 @@ export default function CampaignDetailClient() {
     if (!gate) return
     if (
       !confirm(
-        `「${gate.name}」をコピーしますか？\n\nコピーは安全のため停止中で作成されます。内容を確認してから有効にしてください。`,
+        `「${gate.name}」をコピーしますか？\n\nコピーは安全のため停止中で作成されます。DMテンプレートは変更しない限り再利用され、重複作成されません。`,
       )
     ) return
     setBusy(true)
