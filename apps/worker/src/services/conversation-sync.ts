@@ -86,7 +86,7 @@ export async function syncConversationPage(
  * processes at most five pages per tick so normal scheduled jobs still run.
  * The cursor is account-scoped and persisted in integration_settings.
  */
-export async function processConversationBackfill(
+async function runConversationBackfill(
   db: D1Database,
   igClient: InstagramClient,
   account: { id: string; ig_user_id: string },
@@ -136,4 +136,34 @@ export async function processConversationBackfill(
     .bind(key, JSON.stringify(state))
     .run();
   return state;
+}
+
+/** Run the cron backfill while retaining a redacted failure reason for
+ * operators. Access tokens are never written to D1. */
+export async function processConversationBackfill(
+  db: D1Database,
+  igClient: InstagramClient,
+  account: { id: string; ig_user_id: string },
+): Promise<ConversationBackfillState> {
+  const errorKey = `conversation_backfill_error_v1:${account.id}`;
+  try {
+    const result = await runConversationBackfill(db, igClient, account);
+    await db.prepare('DELETE FROM integration_settings WHERE key = ?').bind(errorKey).run();
+    return result;
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const safe = raw
+      .replace(/access_token=[^&\s]+/gi, 'access_token=[REDACTED]')
+      .replace(/"access_token"\s*:\s*"[^"]+"/gi, '"access_token":"[REDACTED]"')
+      .slice(0, 800);
+    await db
+      .prepare(
+        `INSERT INTO integration_settings (key, value, updated_at)
+         VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now')))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      )
+      .bind(errorKey, JSON.stringify({ error: safe, checkedAt: new Date().toISOString() }))
+      .run();
+    throw error;
+  }
 }

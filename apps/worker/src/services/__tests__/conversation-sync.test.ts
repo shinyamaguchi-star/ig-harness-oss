@@ -99,7 +99,7 @@ describe('syncConversationPage', () => {
     );
 
     expect(result).toMatchObject({ done: true, conversationsScanned: 1, added: 1 });
-    expect(writes).toHaveLength(1);
+    expect(writes).toHaveLength(2);
     expect(writes[0]?.[0]).toBe('conversation_backfill_v1:account-A');
     expect(JSON.parse(String(writes[0]?.[1]))).toMatchObject({ done: true, added: 1 });
   });
