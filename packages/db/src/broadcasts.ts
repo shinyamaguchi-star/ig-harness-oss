@@ -12,6 +12,10 @@ export interface Broadcast {
   scheduled_at: string | null;
   sent_at: string | null;
   total_sent: number;
+  total_target: number;
+  success_count: number;
+  failure_count: number;
+  last_error: string | null;
   account_id: string | null;
   created_at: string;
   updated_at: string;
@@ -149,6 +153,10 @@ export async function deleteBroadcast(db: D1Database, id: number | string): Prom
 
 export interface BroadcastStatusCounts {
   totalSent?: number;
+  totalTarget?: number;
+  successCount?: number;
+  failureCount?: number;
+  lastError?: string | null;
 }
 
 export async function updateBroadcastStatus(
@@ -168,10 +176,102 @@ export async function updateBroadcastStatus(
     fields.push('total_sent = ?');
     values.push(counts.totalSent);
   }
+  if (counts?.totalTarget !== undefined) {
+    fields.push('total_target = ?');
+    values.push(counts.totalTarget);
+  }
+  if (counts?.successCount !== undefined) {
+    fields.push('success_count = ?');
+    values.push(counts.successCount);
+  }
+  if (counts?.failureCount !== undefined) {
+    fields.push('failure_count = ?');
+    values.push(counts.failureCount);
+  }
+  if (counts?.lastError !== undefined) {
+    fields.push('last_error = ?');
+    values.push(counts.lastError);
+  }
 
   values.push(id);
   await db
     .prepare(`UPDATE broadcasts SET ${fields.join(', ')} WHERE id = ?`)
     .bind(...values)
     .run();
+}
+
+export type BroadcastDeliveryStatus = 'success' | 'failed';
+
+export interface BroadcastDelivery {
+  id: number;
+  broadcast_id: number;
+  follower_id: number | null;
+  recipient_igsid: string;
+  status: BroadcastDeliveryStatus;
+  error_code: string | null;
+  error_message: string | null;
+  attempted_at: string;
+  username?: string | null;
+  display_name?: string | null;
+}
+
+export async function clearBroadcastDeliveries(
+  db: D1Database,
+  broadcastId: number | string,
+): Promise<void> {
+  await db.prepare('DELETE FROM broadcast_deliveries WHERE broadcast_id = ?').bind(broadcastId).run();
+}
+
+export async function recordBroadcastDelivery(
+  db: D1Database,
+  input: {
+    broadcastId: number | string;
+    followerId: number | string | null;
+    recipientIgsid: string;
+    status: BroadcastDeliveryStatus;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  },
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO broadcast_deliveries
+         (broadcast_id, follower_id, recipient_igsid, status, error_code, error_message)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      input.broadcastId,
+      input.followerId,
+      input.recipientIgsid,
+      input.status,
+      input.errorCode ?? null,
+      input.errorMessage ?? null,
+    )
+    .run();
+}
+
+export async function getBroadcastDeliveries(
+  db: D1Database,
+  broadcastId: number | string,
+  opts: { status?: BroadcastDeliveryStatus; limit?: number } = {},
+): Promise<BroadcastDelivery[]> {
+  const conditions = ['bd.broadcast_id = ?'];
+  const binds: unknown[] = [broadcastId];
+  if (opts.status) {
+    conditions.push('bd.status = ?');
+    binds.push(opts.status);
+  }
+  binds.push(Math.min(Math.max(opts.limit ?? 200, 1), 500));
+  const result = await db
+    .prepare(
+      `SELECT bd.*, f.username, f.name AS display_name
+       FROM broadcast_deliveries bd
+       LEFT JOIN followers f ON f.id = bd.follower_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY bd.attempted_at DESC, bd.id DESC
+       LIMIT ?`,
+    )
+    .bind(...binds)
+    .all<BroadcastDelivery>();
+  return result.results;
 }

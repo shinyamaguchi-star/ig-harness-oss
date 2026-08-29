@@ -122,10 +122,30 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   scheduled_at TEXT,
   sent_at TEXT,
   total_sent INTEGER DEFAULT 0,
+  total_target INTEGER NOT NULL DEFAULT 0,
+  success_count INTEGER NOT NULL DEFAULT 0,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
   account_id TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now'))),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now')))
 );
+
+CREATE TABLE IF NOT EXISTS broadcast_deliveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  broadcast_id INTEGER NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE,
+  follower_id INTEGER REFERENCES followers(id) ON DELETE SET NULL,
+  recipient_igsid TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('success', 'failed')),
+  error_code TEXT,
+  error_message TEXT,
+  attempted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now')))
+);
+
+CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_broadcast
+  ON broadcast_deliveries(broadcast_id, attempted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_status
+  ON broadcast_deliveries(broadcast_id, status);
 
 -- ── Forms ──
 CREATE TABLE IF NOT EXISTS forms (

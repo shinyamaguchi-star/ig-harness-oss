@@ -670,6 +670,99 @@ export const engagementGatesApi = {
   },
 }
 
+// ── Broadcasts ──
+
+export type BroadcastMessageType = 'text' | 'image' | 'template' | 'quick_reply'
+export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent'
+
+export interface BroadcastApi {
+  id: number
+  name: string
+  messageType: BroadcastMessageType
+  body: string
+  tagFilter: string | null
+  status: BroadcastStatus
+  scheduledAt: string | null
+  sentAt: string | null
+  totalSent: number
+  totalTarget: number
+  successCount: number
+  failureCount: number
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BroadcastDeliveryApi {
+  id: number
+  followerId: number | null
+  recipientHint: string
+  username: string | null
+  displayName: string | null
+  status: 'success' | 'failed'
+  errorCode: string | null
+  errorMessage: string | null
+  attemptedAt: string
+}
+
+export interface BroadcastWriteInput {
+  name: string
+  messageType: BroadcastMessageType
+  body: string
+  tagFilter: string | null
+  scheduledAt: string | null
+}
+
+export const broadcastsApi = {
+  list: async (): Promise<BroadcastApi[]> => {
+    const res = await fetchApi<ApiResponse<BroadcastApi[]>>('/api/broadcasts')
+    return res.data ?? []
+  },
+  create: async (input: BroadcastWriteInput): Promise<BroadcastApi> => {
+    const res = await fetchApi<ApiResponse<BroadcastApi>>('/api/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+    if (!res.data) throw new Error(res.error || '一斉配信の作成に失敗しました')
+    return res.data
+  },
+  update: async (id: number, input: Partial<BroadcastWriteInput>): Promise<BroadcastApi> => {
+    const res = await fetchApi<ApiResponse<BroadcastApi>>(`/api/broadcasts/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    })
+    if (!res.data) throw new Error(res.error || '一斉配信の更新に失敗しました')
+    return res.data
+  },
+  delete: async (id: number): Promise<void> => {
+    await fetchApi<ApiResponse<null>>(`/api/broadcasts/${id}`, { method: 'DELETE' })
+  },
+  send: async (id: number): Promise<BroadcastApi> => {
+    const res = await fetchApi<ApiResponse<BroadcastApi>>(`/api/broadcasts/${id}/send`, {
+      method: 'POST',
+    })
+    if (!res.data) throw new Error(res.error || '一斉配信の送信に失敗しました')
+    return res.data
+  },
+  deliveries: async (
+    id: number,
+    status?: 'success' | 'failed',
+  ): Promise<BroadcastDeliveryApi[]> => {
+    const suffix = status ? `?status=${status}` : ''
+    const res = await fetchApi<ApiResponse<BroadcastDeliveryApi[]>>(
+      `/api/broadcasts/${id}/deliveries${suffix}`,
+    )
+    return res.data ?? []
+  },
+  audienceCount: async (tagId?: string): Promise<number> => {
+    const suffix = tagId ? `?tag_id=${encodeURIComponent(tagId)}` : ''
+    const res = await fetchApi<ApiResponse<{ count: number }>>(
+      `/api/broadcasts/audience-count${suffix}`,
+    )
+    return res.data?.count ?? 0
+  },
+}
+
 // ── Scenario types (aligned with worker's scenarios route) ──
 
 export interface ScenarioApi {

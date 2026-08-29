@@ -6,9 +6,10 @@ import {
   updateBroadcast,
   deleteBroadcast,
   getIgAccountById,
+  getBroadcastDeliveries,
 } from '@ig-harness/db';
 import type { Broadcast as DbBroadcast, BroadcastMessageType } from '@ig-harness/db';
-import { processBroadcastSend } from '../services/broadcast.js';
+import { describeBroadcastFailure, processBroadcastSend } from '../services/broadcast.js';
 import { resolveAccount, getAccountClient } from '../lib/accounts.js';
 import type { Env } from '../index.js';
 
@@ -25,9 +26,21 @@ function serializeBroadcast(row: DbBroadcast) {
     scheduledAt: row.scheduled_at,
     sentAt: row.sent_at,
     totalSent: row.total_sent,
+    totalTarget: row.total_target,
+    successCount: row.success_count,
+    failureCount: row.failure_count,
+    lastError: row.last_error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+async function getOwnedBroadcast(c: Parameters<typeof resolveAccount>[0], id: string) {
+  const account = await resolveAccount(c);
+  if (!account) return { account: null, broadcast: null };
+  const broadcast = await getBroadcastById(c.env.DB, id);
+  if (!broadcast || broadcast.account_id !== account.id) return { account, broadcast: null };
+  return { account, broadcast };
 }
 
 // GET /api/broadcasts - list all
@@ -43,11 +56,38 @@ broadcasts.get('/api/broadcasts', async (c) => {
   }
 });
 
+// GET /api/broadcasts/audience-count — preview current recipient count.
+broadcasts.get('/api/broadcasts/audience-count', async (c) => {
+  try {
+    const account = await resolveAccount(c);
+    if (!account) return c.json({ success: false, error: 'account not found' }, 404);
+    const tagId = c.req.query('tag_id');
+    const row = tagId
+      ? await c.env.DB
+          .prepare(
+            `SELECT COUNT(DISTINCT f.id) AS count
+             FROM followers f
+             INNER JOIN follower_tags ft ON ft.follower_id = f.id
+             WHERE f.account_id = ? AND ft.tag_id = ?`,
+          )
+          .bind(account.id, tagId)
+          .first<{ count: number }>()
+      : await c.env.DB
+          .prepare('SELECT COUNT(*) AS count FROM followers WHERE account_id = ?')
+          .bind(account.id)
+          .first<{ count: number }>();
+    return c.json({ success: true, data: { count: Number(row?.count ?? 0) } });
+  } catch (err) {
+    console.error('GET /api/broadcasts/audience-count error:', err);
+    return c.json({ success: false, error: '対象人数の取得に失敗しました' }, 500);
+  }
+});
+
 // GET /api/broadcasts/:id - get single
 broadcasts.get('/api/broadcasts/:id', async (c) => {
   try {
     const id = c.req.param('id');
-    const broadcast = await getBroadcastById(c.env.DB, id);
+    const { broadcast } = await getOwnedBroadcast(c, id);
 
     if (!broadcast) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
@@ -57,6 +97,37 @@ broadcasts.get('/api/broadcasts/:id', async (c) => {
   } catch (err) {
     console.error('GET /api/broadcasts/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/broadcasts/:id/deliveries — recipient-level results.
+broadcasts.get('/api/broadcasts/:id/deliveries', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const { broadcast } = await getOwnedBroadcast(c, id);
+    if (!broadcast) return c.json({ success: false, error: 'Broadcast not found' }, 404);
+    const requestedStatus = c.req.query('status');
+    const status = requestedStatus === 'success' || requestedStatus === 'failed'
+      ? requestedStatus
+      : undefined;
+    const deliveries = await getBroadcastDeliveries(c.env.DB, id, { status, limit: 500 });
+    return c.json({
+      success: true,
+      data: deliveries.map((row) => ({
+        id: row.id,
+        followerId: row.follower_id,
+        recipientHint: row.recipient_igsid.slice(-4).padStart(4, '*'),
+        username: row.username,
+        displayName: row.display_name,
+        status: row.status,
+        errorCode: row.error_code,
+        errorMessage: row.error_message,
+        attemptedAt: row.attempted_at,
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/broadcasts/:id/deliveries error:', err);
+    return c.json({ success: false, error: '配信結果の取得に失敗しました' }, 500);
   }
 });
 
@@ -100,7 +171,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
 broadcasts.put('/api/broadcasts/:id', async (c) => {
   try {
     const id = c.req.param('id');
-    const existing = await getBroadcastById(c.env.DB, id);
+    const { broadcast: existing } = await getOwnedBroadcast(c, id);
 
     if (!existing) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
@@ -144,6 +215,11 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
 broadcasts.delete('/api/broadcasts/:id', async (c) => {
   try {
     const id = c.req.param('id');
+    const { broadcast } = await getOwnedBroadcast(c, id);
+    if (!broadcast) return c.json({ success: false, error: 'Broadcast not found' }, 404);
+    if (broadcast.status === 'sending') {
+      return c.json({ success: false, error: '送信中の一斉配信は削除できません' }, 400);
+    }
     await deleteBroadcast(c.env.DB, id);
     return c.json({ success: true, data: null });
   } catch (err) {
@@ -156,7 +232,7 @@ broadcasts.delete('/api/broadcasts/:id', async (c) => {
 broadcasts.post('/api/broadcasts/:id/send', async (c) => {
   try {
     const id = c.req.param('id');
-    const existing = await getBroadcastById(c.env.DB, id);
+    const { broadcast: existing } = await getOwnedBroadcast(c, id);
 
     if (!existing) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
@@ -180,7 +256,7 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
   } catch (err) {
     console.error('POST /api/broadcasts/:id/send error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    return c.json({ success: false, error: describeBroadcastFailure(err).message }, 500);
   }
 });
 
