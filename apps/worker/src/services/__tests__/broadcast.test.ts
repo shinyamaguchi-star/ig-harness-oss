@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeBroadcastFailure } from '../broadcast.js';
+import { describeBroadcastFailure, sendIgMessage } from '../broadcast.js';
 
 describe('describeBroadcastFailure', () => {
   it('turns expired-token errors into an actionable Japanese message', () => {
@@ -26,5 +26,27 @@ describe('describeBroadcastFailure', () => {
     );
     expect(result.code).toBe('200');
     expect(result.message).toContain('公開状態');
+  });
+});
+
+describe('sendIgMessage', () => {
+  it('sends text, image, and URL-button blocks as one rich broadcast', async () => {
+    const client = {
+      sendRichMessage: async (_recipient: string, blocks: unknown[]) => ({ sentBlocks: blocks.length }),
+    };
+    const blocks = [
+      { type: 'text', text: 'お知らせです' },
+      { type: 'image', url: 'https://example.com/image.jpg' },
+      { type: 'card', title: '詳細', buttons: [{ type: 'url', label: '開く', url: 'https://example.com' }] },
+    ];
+    let captured: unknown[] | null = null;
+    client.sendRichMessage = async (_recipient: string, sentBlocks: unknown[]) => {
+      captured = sentBlocks;
+      return { sentBlocks: sentBlocks.length };
+    };
+
+    await sendIgMessage(client as never, 'recipient-1', 'template', { blocks });
+
+    expect(captured).toEqual(blocks);
   });
 });

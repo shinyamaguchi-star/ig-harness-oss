@@ -5,11 +5,16 @@ import Header from '@/components/layout/header'
 import {
   api,
   broadcastsApi,
+  richMessagesApi,
   type BroadcastApi,
   type BroadcastDeliveryApi,
-  type BroadcastMessageType,
+  type RichMessage,
+  type RichMessageBlock,
 } from '@/lib/api'
 import type { Tag } from '@ig-harness/shared'
+import { BlockEditor } from '@/app/rich-messages/rich-message-builder'
+import RichMessagePreview from '@/components/rich-message-preview'
+import ImagePickerModal from '@/components/image-picker-modal'
 
 const ACCENT = '#E1306C'
 
@@ -28,15 +33,41 @@ function toDatetimeLocal(value: string | null): string {
   return local.toISOString().slice(0, 16)
 }
 
-function readBody(item: BroadcastApi): { content: string; advanced: string } {
+function readBlocks(item: BroadcastApi): { blocks: RichMessageBlock[]; sourceRichMessageId: string } {
   try {
     const body = JSON.parse(item.body) as Record<string, unknown>
-    if (item.messageType === 'text') return { content: String(body.text ?? ''), advanced: '' }
-    if (item.messageType === 'image') return { content: String(body.url ?? ''), advanced: '' }
+    if (Array.isArray(body.blocks)) {
+      return {
+        blocks: body.blocks as RichMessageBlock[],
+        sourceRichMessageId: typeof body.sourceRichMessageId === 'string' ? body.sourceRichMessageId : '',
+      }
+    }
+    if (item.messageType === 'text' && typeof body.text === 'string') {
+      return { blocks: [{ type: 'text', text: body.text }], sourceRichMessageId: '' }
+    }
+    if (item.messageType === 'image' && typeof body.url === 'string') {
+      return { blocks: [{ type: 'image', url: body.url }], sourceRichMessageId: '' }
+    }
   } catch {
-    // Preserve malformed legacy JSON in the advanced editor for repair.
+    // An old malformed draft opens with an empty custom builder for repair.
   }
-  return { content: '', advanced: item.body }
+  return { blocks: [], sourceRichMessageId: '' }
+}
+
+function newBroadcastBlock(type: 'text' | 'image' | 'card'): RichMessageBlock {
+  if (type === 'text') return { type: 'text', text: '' }
+  if (type === 'image') return { type: 'image', url: '' }
+  return {
+    type: 'card',
+    title: '',
+    subtitle: '',
+    image_url: '',
+    buttons: [{ type: 'url', label: '詳しく見る', url: '' }],
+  }
+}
+
+function isCampaignOnlyTemplate(message: RichMessage): boolean {
+  return /\{\{?\s*(?:GATE_ID|DELIVERY_ID|REWARD_URL)\s*\}?\}/.test(JSON.stringify(message.blocks))
 }
 
 function parseTagId(filter: string | null): string {
@@ -52,6 +83,7 @@ function parseTagId(filter: string | null): string {
 export default function BroadcastsPage() {
   const [items, setItems] = useState<BroadcastApi[]>([])
   const [tags, setTags] = useState<Tag[]>([])
+  const [templates, setTemplates] = useState<RichMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -59,9 +91,10 @@ export default function BroadcastsPage() {
   const [editingId, setEditingId] = useState<number | null>(null)
 
   const [name, setName] = useState('')
-  const [messageType, setMessageType] = useState<BroadcastMessageType>('text')
-  const [content, setContent] = useState('')
-  const [advancedBody, setAdvancedBody] = useState('')
+  const [messageMode, setMessageMode] = useState<'template' | 'custom'>('template')
+  const [selectedTemplateId, setSelectedTemplateId] = useState('')
+  const [blocks, setBlocks] = useState<RichMessageBlock[]>([])
+  const [imagePickerTarget, setImagePickerTarget] = useState<((url: string) => void) | null>(null)
   const [audienceMode, setAudienceMode] = useState<'all' | 'tag'>('all')
   const [tagId, setTagId] = useState('')
   const [deliveryMode, setDeliveryMode] = useState<'draft' | 'schedule'>('draft')
@@ -76,12 +109,14 @@ export default function BroadcastsPage() {
     setLoading(true)
     setError('')
     try {
-      const [broadcasts, tagResponse] = await Promise.all([
+      const [broadcasts, tagResponse, richMessages] = await Promise.all([
         broadcastsApi.list(),
         api.tags.list(),
+        richMessagesApi.list(),
       ])
       setItems(broadcasts)
       setTags(tagResponse.data ?? [])
+      setTemplates(richMessages)
     } catch (err) {
       setError(err instanceof Error ? err.message : '一斉配信の読み込みに失敗しました')
     } finally {
@@ -107,9 +142,9 @@ export default function BroadcastsPage() {
   const resetForm = () => {
     setEditingId(null)
     setName('')
-    setMessageType('text')
-    setContent('')
-    setAdvancedBody('')
+    setMessageMode('template')
+    setSelectedTemplateId('')
+    setBlocks([])
     setAudienceMode('all')
     setTagId('')
     setDeliveryMode('draft')
@@ -117,13 +152,13 @@ export default function BroadcastsPage() {
   }
 
   const beginEdit = (item: BroadcastApi) => {
-    const body = readBody(item)
+    const body = readBlocks(item)
     const selectedTag = parseTagId(item.tagFilter)
     setEditingId(item.id)
     setName(item.name)
-    setMessageType(item.messageType)
-    setContent(body.content)
-    setAdvancedBody(body.advanced)
+    setMessageMode(body.sourceRichMessageId ? 'template' : 'custom')
+    setSelectedTemplateId(body.sourceRichMessageId)
+    setBlocks(body.blocks)
     setAudienceMode(selectedTag ? 'tag' : 'all')
     setTagId(selectedTag)
     setDeliveryMode(item.scheduledAt ? 'schedule' : 'draft')
@@ -134,20 +169,39 @@ export default function BroadcastsPage() {
   }
 
   const buildBody = (): string => {
-    if (messageType === 'text') {
-      if (!content.trim()) throw new Error('送信する文章を入力してください')
-      return JSON.stringify({ text: content.trim() })
-    }
-    if (messageType === 'image') {
-      try { new URL(content.trim()) } catch { throw new Error('画像の有効なURLを入力してください') }
-      return JSON.stringify({ url: content.trim() })
-    }
-    try {
-      const parsed = JSON.parse(advancedBody)
-      return JSON.stringify(parsed)
-    } catch {
-      throw new Error('高度なメッセージ設定は正しいJSON形式で入力してください')
-    }
+    if (messageMode === 'template' && !selectedTemplateId) throw new Error('DMテンプレートを選択してください')
+    if (blocks.length === 0) throw new Error('文章・画像・ボタンのいずれかを追加してください')
+    if (blocks.length > 5) throw new Error('メッセージは最大5ブロックです')
+    return JSON.stringify({
+      kind: 'rich',
+      sourceRichMessageId: messageMode === 'template' ? selectedTemplateId || null : null,
+      blocks,
+    })
+  }
+
+  const selectTemplate = (id: string) => {
+    setSelectedTemplateId(id)
+    const selected = templates.find((template) => template.id === id)
+    setBlocks(selected ? structuredClone(selected.blocks) : [])
+  }
+
+  const updateBlock = (index: number, patch: Partial<RichMessageBlock>) => {
+    setBlocks((current) => current.map((block, i) => i === index ? ({ ...block, ...patch } as RichMessageBlock) : block))
+  }
+
+  const moveBlock = (index: number, direction: -1 | 1) => {
+    setBlocks((current) => {
+      const target = index + direction
+      if (target < 0 || target >= current.length) return current
+      const next = [...current]
+      ;[next[index], next[target]] = [next[target], next[index]]
+      return next
+    })
+  }
+
+  const addBlock = (type: 'text' | 'image' | 'card') => {
+    if (blocks.length >= 5) { setError('メッセージは最大5ブロックです'); return }
+    setBlocks((current) => [...current, newBroadcastBlock(type)])
   }
 
   const save = async () => {
@@ -163,7 +217,7 @@ export default function BroadcastsPage() {
     try {
       const input = {
         name: name.trim(),
-        messageType,
+        messageType: 'template' as const,
         body: buildBody(),
         tagFilter: audienceMode === 'tag' ? JSON.stringify({ tagId }) : null,
         scheduledAt: deliveryMode === 'schedule' ? new Date(scheduledAt).toISOString() : null,
@@ -249,37 +303,69 @@ export default function BroadcastsPage() {
 
       <section className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
         <h2 className="mb-4 text-base font-semibold">{editingId ? '一斉配信を編集' : '新しい一斉配信'}</h2>
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div>
           <label className="text-sm font-medium text-gray-700">
             管理用の配信名
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例：8月キャンペーンのお知らせ" className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 font-normal" />
           </label>
-          <label className="text-sm font-medium text-gray-700">
-            メッセージ形式
-            <select value={messageType} onChange={(e) => setMessageType(e.target.value as BroadcastMessageType)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 font-normal">
-              <option value="text">文章</option>
-              <option value="image">画像</option>
-              <option value="quick_reply">クイック返信（高度な設定）</option>
-              <option value="template">カード（高度な設定）</option>
-            </select>
-          </label>
         </div>
 
-        <div className="mt-4">
-          {messageType === 'text' && (
-            <label className="text-sm font-medium text-gray-700">送信する文章
-              <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={6} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 font-normal" placeholder="相手に送るDMを入力" />
+        <div className="mt-5 rounded-xl border border-gray-200 p-4">
+          <h3 className="text-sm font-semibold text-gray-900">送信するDM</h3>
+          <div className="mt-3 flex flex-wrap gap-4 text-sm">
+            <label><input type="radio" checked={messageMode === 'template'} onChange={() => setMessageMode('template')} className="mr-1.5" />既存のDMテンプレートを使う</label>
+            <label><input type="radio" checked={messageMode === 'custom'} onChange={() => { setMessageMode('custom'); setSelectedTemplateId('') }} className="mr-1.5" />この配信用に作成する</label>
+          </div>
+
+          {messageMode === 'template' && (
+            <label className="mt-4 block text-sm font-medium text-gray-700">DMテンプレート
+              <select value={selectedTemplateId} onChange={(event) => selectTemplate(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 font-normal">
+                <option value="">選択してください</option>
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id} disabled={isCampaignOnlyTemplate(template)}>
+                    {template.name}{isCampaignOnlyTemplate(template) ? '（キャンペーン専用）' : ''}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 block text-xs font-normal text-gray-500">選択時の内容をコピーして保存するため、後から元テンプレートを変更してもこの配信は変わりません。</span>
             </label>
           )}
-          {messageType === 'image' && (
-            <label className="text-sm font-medium text-gray-700">画像URL
-              <input value={content} onChange={(e) => setContent(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 font-normal" placeholder="https://..." />
-            </label>
+
+          {messageMode === 'custom' && (
+            <div className="mt-4">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs text-gray-500">上から順番に送信されます（最大5個）</p>
+                <span className="text-xs text-gray-400">{blocks.length} / 5</span>
+              </div>
+              <div className="space-y-3">
+                {blocks.map((block, index) => (
+                  <BlockEditor
+                    key={index}
+                    block={block}
+                    index={index}
+                    total={blocks.length}
+                    onChange={(patch) => updateBlock(index, patch)}
+                    onMove={(direction) => moveBlock(index, direction)}
+                    onRemove={() => setBlocks((current) => current.filter((_, i) => i !== index))}
+                    onPickImage={(callback) => setImagePickerTarget(() => callback)}
+                  />
+                ))}
+              </div>
+              {blocks.length < 5 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => addBlock('text')} className="rounded-lg border border-gray-300 px-3 py-2 text-xs">＋文章</button>
+                  <button type="button" onClick={() => addBlock('image')} className="rounded-lg border border-gray-300 px-3 py-2 text-xs">＋画像</button>
+                  <button type="button" onClick={() => addBlock('card')} className="rounded-lg border border-gray-300 px-3 py-2 text-xs">＋リンクボタン</button>
+                </div>
+              )}
+            </div>
           )}
-          {(messageType === 'template' || messageType === 'quick_reply') && (
-            <label className="text-sm font-medium text-gray-700">メッセージ設定（JSON）
-              <textarea value={advancedBody} onChange={(e) => setAdvancedBody(e.target.value)} rows={8} spellCheck={false} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 font-mono text-xs font-normal" placeholder={messageType === 'quick_reply' ? '{"text":"選んでください","quick_replies":[{"content_type":"text","title":"はい","payload":"YES"}]}' : '{"elements":[{"title":"タイトル","buttons":[]}]}' } />
-            </label>
+
+          {blocks.length > 0 && (
+            <div className="mt-5 rounded-lg bg-gray-50 p-4">
+              <h4 className="mb-3 text-xs font-semibold text-gray-600">送信プレビュー</h4>
+              <RichMessagePreview blocks={blocks} />
+            </div>
           )}
         </div>
 
@@ -327,7 +413,7 @@ export default function BroadcastsPage() {
                   <div className="flex flex-col justify-between gap-3 md:flex-row md:items-start">
                     <div>
                       <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{item.name}</h3><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.classes}`}>{badge.label}</span>{hasFailures && <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">要確認</span>}</div>
-                      <p className="mt-1 text-xs text-gray-500">{item.messageType === 'text' ? '文章' : item.messageType === 'image' ? '画像' : '高度なメッセージ'} · {parseTagId(item.tagFilter) ? 'タグ指定' : '全対象者'}{item.scheduledAt ? ` · 予約 ${new Date(item.scheduledAt).toLocaleString('ja-JP')}` : ''}</p>
+                      <p className="mt-1 text-xs text-gray-500">{item.messageType === 'text' ? '文章' : item.messageType === 'image' ? '画像' : 'DMテンプレート'} · {parseTagId(item.tagFilter) ? 'タグ指定' : '全対象者'}{item.scheduledAt ? ` · 予約 ${new Date(item.scheduledAt).toLocaleString('ja-JP')}` : ''}</p>
                       {item.status === 'sent' && <p className="mt-2 text-sm"><span className="text-green-700">成功 {item.successCount}件</span><span className="mx-2 text-gray-300">/</span><span className={item.failureCount ? 'text-red-700' : 'text-gray-500'}>失敗 {item.failureCount}件</span><span className="mx-2 text-gray-300">/</span>対象 {item.totalTarget}件</p>}
                       {item.lastError && <p className="mt-2 rounded bg-red-50 px-3 py-2 text-xs text-red-700">{item.lastError}</p>}
                     </div>
@@ -356,6 +442,14 @@ export default function BroadcastsPage() {
           )}
         </section>
       )}
+      <ImagePickerModal
+        open={imagePickerTarget !== null}
+        onClose={() => setImagePickerTarget(null)}
+        onPick={(url) => {
+          imagePickerTarget?.(url)
+          setImagePickerTarget(null)
+        }}
+      />
     </div>
   )
 }

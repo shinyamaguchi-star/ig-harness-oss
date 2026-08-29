@@ -7,7 +7,7 @@ import {
   recordBroadcastDelivery,
 } from '@ig-harness/db';
 import type { Broadcast } from '@ig-harness/db';
-import type { InstagramClient } from '@ig-harness/ig-sdk';
+import type { InstagramClient, RichMessageBlock } from '@ig-harness/ig-sdk';
 import { calculateStaggerDelay, sleep } from './stealth.js';
 import { recordDmFailure } from '../lib/health.js';
 
@@ -192,7 +192,7 @@ export async function processScheduledBroadcasts(
   }
 }
 
-async function sendIgMessage(
+export async function sendIgMessage(
   igClient: InstagramClient,
   recipientId: string,
   messageType: string,
@@ -206,7 +206,11 @@ async function sendIgMessage(
       await igClient.sendImage(recipientId, body.url as string);
       break;
     case 'template':
-      await igClient.sendGenericTemplate(recipientId, body.elements as never[]);
+      if (Array.isArray(body.blocks)) {
+        await igClient.sendRichMessage(recipientId, body.blocks as RichMessageBlock[]);
+      } else {
+        await igClient.sendGenericTemplate(recipientId, body.elements as never[]);
+      }
       break;
     case 'quick_reply':
       await igClient.sendQuickReply(

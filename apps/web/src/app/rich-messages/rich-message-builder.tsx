@@ -277,7 +277,7 @@ const BLOCK_LABELS: Record<RichMessageBlock['type'], string> = {
   quick_replies: 'クイックリプライ',
 }
 
-function BlockEditor({
+export function BlockEditor({
   block,
   index,
   total,

@@ -60,7 +60,7 @@ function validateCard(card: unknown, path: string): string | null {
   return null;
 }
 
-function validateBlocks(blocks: unknown): { ok: true; blocks: RichMessageBlock[] } | { ok: false; error: string } {
+export function validateBlocks(blocks: unknown): { ok: true; blocks: RichMessageBlock[] } | { ok: false; error: string } {
   if (!Array.isArray(blocks)) return { ok: false, error: 'blocks must be an array' };
   if (blocks.length === 0 || blocks.length > 5) {
     return { ok: false, error: 'blocks must contain 1 to 5 entries' };

@@ -11,9 +11,52 @@ import {
 import type { Broadcast as DbBroadcast, BroadcastMessageType } from '@ig-harness/db';
 import { describeBroadcastFailure, processBroadcastSend } from '../services/broadcast.js';
 import { resolveAccount, getAccountClient } from '../lib/accounts.js';
+import { validateBlocks } from './rich-messages.js';
 import type { Env } from '../index.js';
 
 const broadcasts = new Hono<Env>();
+
+function validateBroadcastBody(messageType: BroadcastMessageType, rawBody: string): string | null {
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(rawBody) as Record<string, unknown>;
+  } catch {
+    return 'メッセージ内容が正しいJSON形式ではありません';
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return 'メッセージ内容が不正です';
+  if (messageType === 'text') {
+    return typeof body.text === 'string' && body.text.trim().length > 0 && body.text.length <= 1000
+      ? null : '文章は1〜1000文字で入力してください';
+  }
+  if (messageType === 'image') {
+    return typeof body.url === 'string' && /^https:\/\//.test(body.url)
+      ? null : '画像にはhttpsのURLが必要です';
+  }
+  if (messageType === 'template' && Array.isArray(body.blocks)) {
+    const result = validateBlocks(body.blocks);
+    if (!result.ok) return `複合メッセージが不正です: ${result.error}`;
+    const serialized = JSON.stringify(result.blocks);
+    if (/\{\{?\s*(?:GATE_ID|DELIVERY_ID|REWARD_URL)\s*\}?\}/.test(serialized)) {
+      return 'キャンペーン専用の変数を含むDMテンプレートは一斉配信に使用できません';
+    }
+    const invalidUrlButton = result.blocks.some((block) => {
+      const cards = block.type === 'card' ? [block] : block.type === 'carousel' ? block.cards : [];
+      return cards.some((card) => card.buttons.some((button) => button.type === 'url' && !/^https:\/\//.test(button.url)));
+    });
+    if (invalidUrlButton) return 'リンクボタンにはhttpsから始まるURLを入力してください';
+    return null;
+  }
+  // Preserve support for legacy generic-template and quick-reply JSON.
+  if (messageType === 'template') {
+    return Array.isArray(body.elements) && body.elements.length > 0
+      ? null : 'DMテンプレートまたはカード内容を設定してください';
+  }
+  if (messageType === 'quick_reply') {
+    return typeof body.text === 'string' && Array.isArray(body.quick_replies) && body.quick_replies.length > 0
+      ? null : 'クイック返信の文章と選択肢を設定してください';
+  }
+  return '未対応のメッセージ形式です';
+}
 
 function serializeBroadcast(row: DbBroadcast) {
   return {
@@ -150,6 +193,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
         400,
       );
     }
+    const bodyError = validateBroadcastBody(reqBody.messageType, reqBody.body);
+    if (bodyError) return c.json({ success: false, error: bodyError }, 400);
 
     const broadcast = await createBroadcast(c.env.DB, {
       name: reqBody.name,
@@ -188,6 +233,11 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       tagFilter?: string | null;
       scheduledAt?: string | null;
     }>();
+
+    const effectiveType = reqBody.messageType ?? existing.message_type;
+    const effectiveBody = reqBody.body ?? existing.body;
+    const bodyError = validateBroadcastBody(effectiveType, effectiveBody);
+    if (bodyError) return c.json({ success: false, error: bodyError }, 400);
 
     // Keep status in sync with scheduledAt changes
     let statusUpdate: 'draft' | 'scheduled' | undefined;
