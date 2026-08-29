@@ -83,7 +83,8 @@ export async function syncConversationPage(
 
 /**
  * One-time automatic backfill driven by the existing five-minute cron. It
- * processes at most five pages per tick so normal scheduled jobs still run.
+ * processes one page per tick and persists the cursor immediately. Large
+ * inboxes therefore cannot lose all progress to a Worker execution timeout.
  * The cursor is account-scoped and persisted in integration_settings.
  */
 async function runConversationBackfill(
@@ -110,7 +111,7 @@ async function runConversationBackfill(
   }
   if (state.done) return state;
 
-  for (let pageIndex = 0; pageIndex < 5; pageIndex++) {
+  for (let pageIndex = 0; pageIndex < 1; pageIndex++) {
     const result = await syncConversationPage(db, igClient, account, state.cursor ?? undefined);
     // One-to-one Instagram conversations should expose the other participant.
     // Treat a whole non-empty page without participants as an API-shape error,
