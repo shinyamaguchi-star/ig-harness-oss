@@ -50,23 +50,29 @@ export async function syncConversationPage(
 
   let added = 0;
   let updated = 0;
-  for (const participant of contacts.values()) {
-    const existing = await getFriendByIgsid(db, participant.id);
-    // A globally-existing row owned by another account must never be moved.
-    // This is rare in the current one-account-per-environment deployments,
-    // but skipping is safer than cross-account data leakage.
-    if (existing?.account_id && existing.account_id !== account.id) {
-      skipped++;
-      continue;
+  const contactList = [...contacts.values()];
+  // Each upsert includes several D1 operations. Ten-at-a-time avoids the long
+  // wall-clock time of 50 fully serial contacts while keeping concurrency low.
+  for (let offset = 0; offset < contactList.length; offset += 10) {
+    const outcomes = await Promise.all(contactList.slice(offset, offset + 10).map(async (participant) => {
+      const existing = await getFriendByIgsid(db, participant.id);
+      // A globally-existing row owned by another account must never be moved.
+      // This is rare in the current one-account-per-environment deployments,
+      // but skipping is safer than cross-account data leakage.
+      if (existing?.account_id && existing.account_id !== account.id) return 'skipped' as const;
+      await upsertFriend(db, {
+        igsid: participant.id,
+        username: participant.username ?? null,
+        displayName: participant.name ?? participant.username ?? null,
+        accountId: account.id,
+      });
+      return existing ? 'updated' as const : 'added' as const;
+    }));
+    for (const outcome of outcomes) {
+      if (outcome === 'added') added++;
+      else if (outcome === 'updated') updated++;
+      else skipped++;
     }
-    await upsertFriend(db, {
-      igsid: participant.id,
-      username: participant.username ?? null,
-      displayName: participant.name ?? participant.username ?? null,
-      accountId: account.id,
-    });
-    if (existing) updated++;
-    else added++;
   }
 
   const nextCursor = page.paging?.cursors?.after ?? null;
