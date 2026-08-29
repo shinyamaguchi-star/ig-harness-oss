@@ -103,6 +103,16 @@ export type FollowerListParams = {
   search?: string
 }
 
+export interface ConversationSyncResult {
+  conversationsScanned: number
+  contactsFound: number
+  added: number
+  updated: number
+  skipped: number
+  nextCursor: string | null
+  hasMore: boolean
+}
+
 // ── Engagement Gate (Campaign) types — wire format is snake_case ──
 
 export interface GateAnalytics {
@@ -794,6 +804,11 @@ export const api = {
       fetchApi<ApiResponse<FollowerApi>>(`/api/friends/${id}`),
     count: () =>
       fetchApi<ApiResponse<{ count: number }>>('/api/friends/count'),
+    syncConversations: (after?: string | null) =>
+      fetchApi<ApiResponse<ConversationSyncResult>>('/api/friends/sync-conversations', {
+        method: 'POST',
+        body: JSON.stringify({ after: after ?? null }),
+      }),
     addTag: (followerId: string, tagId: string) =>
       fetchApi<ApiResponse<null>>(`/api/friends/${followerId}/tags`, {
         method: 'POST',

@@ -13,6 +13,7 @@ import type {
   CreateContainerParams,
   ContainerStatus,
   PublishingLimit,
+  InstagramConversationPage,
 } from "./types.js";
 
 const GRAPH_API_BASE = "https://graph.instagram.com/v21.0";
@@ -113,6 +114,23 @@ export class InstagramClient {
 
   async getUserProfile(igsid: string): Promise<UserProfile> {
     return this.request("GET", `/${igsid}?fields=id,username,name,profile_pic,is_user_follow_business,is_business_follow_user,follower_count,is_verified_user`);
+  }
+
+  /**
+   * Return one page of conversations for inbox backfill. This is read-only:
+   * it never sends a message or changes the Instagram inbox.
+   */
+  async getConversations(after?: string): Promise<InstagramConversationPage> {
+    const query = new URLSearchParams({
+      platform: "instagram",
+      fields: "id,updated_time,participants",
+      limit: "50",
+    });
+    if (after) query.set("after", after);
+    return this.request(
+      "GET",
+      `/${this.igUserId}/conversations?${query.toString()}`,
+    );
   }
 
   /**

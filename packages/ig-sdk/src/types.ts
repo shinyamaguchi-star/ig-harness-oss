@@ -141,6 +141,27 @@ export interface UserProfile {
   is_verified_user?: boolean;
 }
 
+// ── Conversations API ──
+export interface ConversationParticipant {
+  id: string;
+  username?: string;
+  name?: string;
+}
+
+export interface InstagramConversation {
+  id: string;
+  updated_time?: string;
+  participants?: { data?: ConversationParticipant[] };
+}
+
+export interface InstagramConversationPage {
+  data?: InstagramConversation[];
+  paging?: {
+    cursors?: { before?: string; after?: string };
+    next?: string;
+  };
+}
+
 // ── Media Info ──
 export interface MediaInfo {
   id: string;

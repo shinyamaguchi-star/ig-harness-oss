@@ -104,6 +104,9 @@ export default function FollowersPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selectedFollower, setSelectedFollower] = useState<FollowerApi | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncProgress, setSyncProgress] = useState('')
+  const [syncNotice, setSyncNotice] = useState('')
 
   const loadTags = useCallback(async () => {
     try {
@@ -149,9 +152,69 @@ export default function FollowersPage() {
     setSearch(searchInput)
   }
 
+  const syncPastDmContacts = async () => {
+    if (!window.confirm('過去のInstagram DM会話を読み込み、未登録の相手を追加します。DM送信は行いません。実行しますか？')) return
+    setSyncing(true)
+    setError('')
+    setSyncNotice('')
+    let cursor: string | null = null
+    let pages = 0
+    let conversations = 0
+    let found = 0
+    let added = 0
+    let updated = 0
+    let skipped = 0
+    const seenCursors = new Set<string>()
+    try {
+      do {
+        const response = await api.followers.syncConversations(cursor)
+        if (!response.success || !response.data) throw new Error(response.error || '同期に失敗しました')
+        const result = response.data
+        pages++
+        conversations += result.conversationsScanned
+        found += result.contactsFound
+        added += result.added
+        updated += result.updated
+        skipped += result.skipped
+        setSyncProgress(`${pages}ページ処理済み・新規${added}人`)
+        if (!result.hasMore || !result.nextCursor) break
+        if (seenCursors.has(result.nextCursor)) throw new Error('Metaから同じページが繰り返し返されたため、安全のため停止しました')
+        seenCursors.add(result.nextCursor)
+        cursor = result.nextCursor
+        if (pages >= 100) throw new Error('安全上の上限（100ページ）に達したため停止しました')
+      } while (true)
+      setSyncNotice(`同期完了：会話${conversations}件・相手${found}人を確認、新規${added}人、更新${updated}人、対象外${skipped}件`)
+      setPage(1)
+      await loadFollowers()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '過去DMの同期に失敗しました')
+    } finally {
+      setSyncing(false)
+      setSyncProgress('')
+    }
+  }
+
   return (
     <div>
-      <Header title="フォロワー" description="Instagramフォロワーの管理" />
+      <Header
+        title="フォロワー"
+        description="Instagramフォロワーの管理"
+        action={
+          <button
+            type="button"
+            onClick={() => void syncPastDmContacts()}
+            disabled={syncing}
+            className="min-h-[44px] rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            style={{ backgroundColor: '#E1306C' }}
+          >
+            {syncing ? syncProgress || 'DM履歴を同期中…' : '過去DMの相手を同期'}
+          </button>
+        }
+      />
+
+      {syncNotice && (
+        <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">{syncNotice}</div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 mb-4">

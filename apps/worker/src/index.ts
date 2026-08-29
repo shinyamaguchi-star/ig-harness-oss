@@ -27,6 +27,7 @@ import { accounts } from './routes/accounts.js';
 import { capabilities } from './routes/capabilities.js';
 import { mediaPosts } from './routes/media-posts.js';
 import { processMediaPosts } from './services/media-publish.js';
+import { processConversationBackfill } from './services/conversation-sync.js';
 import { ensureDefaultAccount, getAccountClient, toIgAccountRef } from './lib/accounts.js';
 import { recordCronRun, recordTokenValidity } from './lib/health.js';
 
@@ -335,12 +336,13 @@ async function scheduled(
         .catch(() => recordTokenValidity(env.DB, account.id, false).catch(() => {})),
     );
     const ref = toIgAccountRef(account);
-    const taskNames = ['processStepDeliveries', 'processScheduledBroadcasts', 'processFollowupDrip', 'processMediaPosts'] as const;
+    const taskNames = ['processStepDeliveries', 'processScheduledBroadcasts', 'processFollowupDrip', 'processMediaPosts', 'processConversationBackfill'] as const;
     const results = await Promise.allSettled([
       processStepDeliveries(env.DB, igClient, env.WORKER_URL, account.id),
       processScheduledBroadcasts(env.DB, igClient, env.WORKER_URL, account.id),
       processFollowupDrip(env.DB, igClient, env.WORKER_URL, undefined, ref, account.id),
       processMediaPosts(env.DB, igClient, account.id),
+      processConversationBackfill(env.DB, igClient, account),
     ]);
     results.forEach((result, i) => {
       if (result.status === 'rejected') {

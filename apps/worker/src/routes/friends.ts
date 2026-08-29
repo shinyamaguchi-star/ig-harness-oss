@@ -13,6 +13,7 @@ import {
 } from '@ig-harness/db';
 import type { Friend as DbFriend, Tag as DbTag } from '@ig-harness/db';
 import { resolveAccount, getAccountClient } from '../lib/accounts.js';
+import { syncConversationPage } from '../services/conversation-sync.js';
 import type { Env } from '../index.js';
 
 const friends = new Hono<Env>();
@@ -140,6 +141,44 @@ friends.get('/api/friends/count', async (c) => {
   } catch (err) {
     console.error('GET /api/friends/count error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/friends/sync-conversations - import one page of past DM contacts.
+// The admin UI follows nextCursor until Meta reports no more pages.
+friends.post('/api/friends/sync-conversations', async (c) => {
+  try {
+    const account = await resolveAccount(c);
+    if (!account) return c.json({ success: false, error: 'account not found' }, 404);
+    const body: { after?: string | null } = await c.req
+      .json<{ after?: string | null }>()
+      .catch(() => ({}));
+    const igClient = await getAccountClient(c.env, c.env.DB, account);
+    const result = await syncConversationPage(
+      c.env.DB,
+      igClient,
+      account,
+      body.after || undefined,
+    );
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    console.error('POST /api/friends/sync-conversations error:', err);
+    const raw = err instanceof Error ? err.message : String(err);
+    const code = raw.match(/(?:"code"\s*:\s*|code[=: ]+)(\d+)/i)?.[1];
+    const messages: Record<string, string> = {
+      '10': 'DM履歴を取得する権限がありません。Instagramのメッセージ権限を確認してください。',
+      '100': 'MetaがDM履歴取得リクエストを受け付けませんでした。Instagramアプリ設定を確認してください。',
+      '190': 'アクセストークンが無効または期限切れです。トークンを再発行してください。',
+      '200': 'Instagram APIへのアクセスが制限されています。Metaアプリの公開・認証状態を確認してください。',
+    };
+    const safe = raw
+      .replace(/access_token=[^&\s]+/gi, 'access_token=[REDACTED]')
+      .replace(/"access_token"\s*:\s*"[^"]+"/gi, '"access_token":"[REDACTED]"')
+      .slice(0, 500);
+    return c.json(
+      { success: false, error: code && messages[code] ? `${messages[code]}（Meta code ${code}）` : `DM履歴の同期に失敗しました: ${safe}` },
+      500,
+    );
   }
 });
 
