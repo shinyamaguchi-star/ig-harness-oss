@@ -250,7 +250,7 @@ export async function triggerGateForStoryMention(
 /**
  * Parse comment_reply_text into a list of candidate patterns. Accepts
  * either a JSON array of strings (the wizard stores it this way so the
- * operator can rotate up to 3 phrasings) or a single plain string. The
+ * operator can rotate up to 10 phrasings) or a single plain string. The
  * result is always a non-empty array on success, empty array otherwise.
  */
 function parseCommentReplyPatterns(raw: string): string[] {

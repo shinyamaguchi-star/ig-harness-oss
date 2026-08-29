@@ -363,6 +363,33 @@ describe('triggerGateForComment', () => {
     expect(fakeIgClient.replyToComment).toHaveBeenCalledWith('comment-123', 'DMを確認してね');
     expect(fakeIgClient.postCommentToMedia).not.toHaveBeenCalled();
   });
+
+  it('can rotate across ten threaded comment reply patterns', async () => {
+    const db = createMockDb();
+    const patterns = Array.from({ length: 10 }, (_, index) => `返信パターン${index + 1}`);
+    db.gates.push({
+      id: 'gate-ten-replies', status: 'active', trigger_type: 'comment_on_post',
+      target_post_id: 'post-1', trigger_keyword: null,
+      require_follow: 1, initial_dm_text: 'x', initial_dm_button_label: 'x',
+      follow_reminder_dm_text: '', follow_reminder_button_label: '',
+      reward_dm_text: '', reward_url: null, max_loops: 0,
+      comment_reply_text: JSON.stringify(patterns),
+    });
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.999);
+
+    try {
+      await triggerGateForComment(db, fakeIgClient as never, {
+        postId: 'post-1',
+        commentId: 'comment-ten',
+        commentText: '欲しい',
+        follower: { id: 42, igsid: 'IGSID42' },
+      });
+    } finally {
+      random.mockRestore();
+    }
+
+    expect(fakeIgClient.replyToComment).toHaveBeenCalledWith('comment-ten', '返信パターン10');
+  });
 });
 
 describe('logMessage integration', () => {

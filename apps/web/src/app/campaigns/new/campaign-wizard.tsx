@@ -27,6 +27,7 @@ import RichMessagePreview from '@/components/rich-message-preview'
 import { richMessageToEditableDraft } from '@/lib/rich-message-draft'
 
 const ACCENT = '#E1306C'
+const MAX_COMMENT_REPLY_PATTERNS = 10
 
 /**
  * Single-page campaign wizard. Combines what used to be 3 separate steps
@@ -111,7 +112,7 @@ interface WizardState {
    *  the first click back to LINE captures the IG↔LINE userId pair. */
   lineConnectionId: string
   linePoolSlug: string
-  /** 1-3 candidate threaded comment replies. On each gate firing the
+  /** 1-10 candidate threaded comment replies. On each gate firing the
    *  webhook picks one at random so replies don't look robotic.
    *  All blank = no public reply. */
   commentReplyTexts: string[]
@@ -966,7 +967,9 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                   <label className="block text-xs font-medium text-gray-600">
                     コメントへのスレッド返信（任意）
                   </label>
-                  <span className="text-[10px] text-gray-400">{s.commentReplyTexts.length}/3 パターン</span>
+                  <span className="text-[10px] text-gray-400">
+                    {s.commentReplyTexts.length}/{MAX_COMMENT_REPLY_PATTERNS} パターン
+                  </span>
                 </div>
                 <div className="space-y-2">
                   {s.commentReplyTexts.map((text, idx) => (
@@ -1002,7 +1005,7 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                     </div>
                   ))}
                 </div>
-                {s.commentReplyTexts.length < 3 && (
+                {s.commentReplyTexts.length < MAX_COMMENT_REPLY_PATTERNS && (
                   <button
                     type="button"
                     onClick={() => update('commentReplyTexts', [...s.commentReplyTexts, ''])}
@@ -1449,7 +1452,7 @@ function hydrateStateFromGate(
   const reminderExisting = !!gate.follow_reminder_dm_rich_message_id
 
   // Decode the comment_reply_text column (plain string or JSON array) back
-  // to the 1-3 textarea slots.
+  // to the 1-10 textarea slots.
   const replyTexts = parseReplyPatternsForEdit(gate.comment_reply_text ?? '')
 
   // Decode the followup_dm_sequence JSON so the edit form can round-trip.
@@ -1563,7 +1566,7 @@ function buildFollowupPayload(s: WizardState): string | null {
 }
 
 /**
- * Serialize the 1-3 comment-reply patterns for the backend.
+ * Serialize the 1-10 comment-reply patterns for the backend.
  *   []       → null (no public reply)
  *   ['a']    → 'a' (plain string for back-compat)
  *   [a,b,..] → JSON array, webhook picks one at random per delivery
