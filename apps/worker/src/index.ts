@@ -335,21 +335,22 @@ async function scheduled(
         })
         .catch(() => recordTokenValidity(env.DB, account.id, false).catch(() => {})),
     );
-    // The Conversations API can be slower than the DB-only scheduled jobs.
-    // Await the one-time backfill first so Cloudflare does not terminate its
-    // request while the rest of the cron batch is still settling.
+    // Highest priority: publish due media first. Campaign activation is part
+    // of processMediaPosts(), so a successful post becomes reply-ready before
+    // any bulk/backfill work can consume this invocation's time or subrequests.
     try {
-      await processConversationBackfill(env.DB, igClient, account);
+      await processMediaPosts(env.DB, igClient, account.id);
     } catch (err) {
-      console.error(`[cron] processConversationBackfill failed for account=${account.id}:`, err);
+      console.error(`[cron] processMediaPosts failed for account=${account.id}:`, err);
     }
+
+    // Next priority: campaign/scenario delivery work. Real-time comment and
+    // DM triggers use /webhook and are already isolated from this cron path.
     const ref = toIgAccountRef(account);
-    const taskNames = ['processStepDeliveries', 'processScheduledBroadcasts', 'processFollowupDrip', 'processMediaPosts'] as const;
+    const taskNames = ['processStepDeliveries', 'processFollowupDrip'] as const;
     const results = await Promise.allSettled([
       processStepDeliveries(env.DB, igClient, env.WORKER_URL, account.id),
-      processScheduledBroadcasts(env.DB, igClient, env.WORKER_URL, account.id),
       processFollowupDrip(env.DB, igClient, env.WORKER_URL, undefined, ref, account.id),
-      processMediaPosts(env.DB, igClient, account.id),
     ]);
     results.forEach((result, i) => {
       if (result.status === 'rejected') {
@@ -359,6 +360,23 @@ async function scheduled(
         );
       }
     });
+
+    // Lower priority: bulk sends may be slow, but can no longer block today's
+    // scheduled post or its campaign activation.
+    try {
+      await processScheduledBroadcasts(env.DB, igClient, env.WORKER_URL, account.id);
+    } catch (err) {
+      console.error(`[cron] processScheduledBroadcasts failed for account=${account.id}:`, err);
+    }
+
+    // Lowest priority: historical conversation import. It progresses one
+    // page at a time and is deliberately last so a large inbox cannot delay
+    // publishing or campaign work.
+    try {
+      await processConversationBackfill(env.DB, igClient, account);
+    } catch (err) {
+      console.error(`[cron] processConversationBackfill failed for account=${account.id}:`, err);
+    }
   }
 }
 

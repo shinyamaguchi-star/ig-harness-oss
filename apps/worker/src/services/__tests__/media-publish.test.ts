@@ -256,8 +256,8 @@ describe('processMediaPosts — scheduled posts', () => {
     );
   });
 
-  it('3rd failure marks the post failed', async () => {
-    vi.mocked(getDueMediaPosts).mockResolvedValueOnce([makePost({ attempt_count: 2 })] as any);
+  it('4th failure marks the post failed after three delayed retries', async () => {
+    vi.mocked(getDueMediaPosts).mockResolvedValueOnce([makePost({ attempt_count: 3 })] as any);
     const client = makeClient({
       createMediaContainer: vi.fn().mockRejectedValue(new Error('boom')),
     });
@@ -265,7 +265,48 @@ describe('processMediaPosts — scheduled posts', () => {
     expect(updateMediaPost).toHaveBeenCalledWith(
       db,
       'post-1',
-      expect.objectContaining({ status: 'failed', attempt_count: 3 }),
+      expect.objectContaining({ status: 'failed', attempt_count: 4, next_retry_at: null }),
+    );
+  });
+
+  it('labels Meta code 2 as transient and schedules a retry instead of claiming a missing scope', async () => {
+    vi.mocked(getDueMediaPosts).mockResolvedValueOnce([makePost({ attempt_count: 0 })] as any);
+    const client = makeClient({
+      createMediaContainer: vi.fn().mockRejectedValue(
+        new Error('Instagram API error 500: {"error":{"message":"An unexpected error has occurred.","type":"OAuthException","is_transient":true,"code":2}}'),
+      ),
+    });
+    await processMediaPosts(db, client, 'acc-1');
+    const retryCall = vi.mocked(updateMediaPost).mock.calls.find(
+      (call) => (call[2] as any).attempt_count === 1,
+    );
+    expect(retryCall?.[2]).toEqual(expect.objectContaining({
+      attempt_count: 1,
+      last_attempt_at: expect.any(String),
+      next_retry_at: expect.any(String),
+      error: expect.stringContaining('Meta側の一時エラー'),
+    }));
+    expect(String((retryCall?.[2] as any).error)).not.toContain('instagram_business_content_publish');
+    expect((retryCall?.[2] as any).status).toBeUndefined();
+  });
+
+  it('fails immediately with a token-specific message for Meta code 190', async () => {
+    vi.mocked(getDueMediaPosts).mockResolvedValueOnce([makePost({ attempt_count: 0 })] as any);
+    const client = makeClient({
+      createMediaContainer: vi.fn().mockRejectedValue(
+        new Error('Instagram API error 401: {"error":{"message":"Error validating access token","type":"OAuthException","code":190}}'),
+      ),
+    });
+    await processMediaPosts(db, client, 'acc-1');
+    expect(updateMediaPost).toHaveBeenCalledWith(
+      db,
+      'post-1',
+      expect.objectContaining({
+        status: 'failed',
+        attempt_count: 1,
+        next_retry_at: null,
+        error: expect.stringContaining('トークンが無効または期限切れ'),
+      }),
     );
   });
 

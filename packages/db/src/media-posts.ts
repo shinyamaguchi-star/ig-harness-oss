@@ -29,6 +29,10 @@ export interface MediaPost {
   child_creation_ids: string | null;
   published_media_id: string | null;
   attempt_count: number;
+  /** Most recent attempt to call the Instagram publishing API. */
+  last_attempt_at: string | null;
+  /** Earliest time a transient failure may be retried. */
+  next_retry_at: string | null;
   error: string | null;
   /** Engagement gate prepared while this post was still unpublished. */
   campaign_gate_id: string | null;
@@ -131,9 +135,10 @@ export async function getDueMediaPosts(
     .prepare(
       `SELECT * FROM media_posts
        WHERE account_id = ? AND status = 'scheduled' AND scheduled_at <= ?
+         AND (next_retry_at IS NULL OR next_retry_at <= ?)
        ORDER BY scheduled_at ASC`,
     )
-    .bind(accountId, now)
+    .bind(accountId, now, now)
     .all<MediaPost>();
   return result.results;
 }
@@ -141,14 +146,16 @@ export async function getDueMediaPosts(
 export async function getProcessingMediaPosts(
   db: D1Database,
   accountId: string,
+  now: string = jstNow(),
 ): Promise<MediaPost[]> {
   const result = await db
     .prepare(
       `SELECT * FROM media_posts
        WHERE account_id = ? AND status = 'processing'
+         AND (next_retry_at IS NULL OR next_retry_at <= ?)
        ORDER BY scheduled_at ASC`,
     )
-    .bind(accountId)
+    .bind(accountId, now)
     .all<MediaPost>();
   return result.results;
 }
@@ -161,6 +168,8 @@ export type UpdateMediaPostInput = Partial<
     | 'child_creation_ids'
     | 'published_media_id'
     | 'attempt_count'
+    | 'last_attempt_at'
+    | 'next_retry_at'
     | 'error'
     | 'title'
     | 'post_type'
@@ -189,6 +198,8 @@ export async function updateMediaPost(
     'child_creation_ids',
     'published_media_id',
     'attempt_count',
+    'last_attempt_at',
+    'next_retry_at',
     'error',
     'title',
     'post_type',

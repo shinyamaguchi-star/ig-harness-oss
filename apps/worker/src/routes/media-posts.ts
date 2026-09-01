@@ -46,6 +46,8 @@ function serializeMediaPost(row: MediaPost) {
     creationId: row.creation_id,
     publishedMediaId: row.published_media_id,
     attemptCount: row.attempt_count,
+    lastAttemptAt: row.last_attempt_at,
+    nextRetryAt: row.next_retry_at,
     error: row.error,
     campaignGateId: row.campaign_gate_id,
     campaignActivationStatus: row.campaign_activation_status,

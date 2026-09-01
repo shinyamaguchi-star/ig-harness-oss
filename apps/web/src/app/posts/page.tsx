@@ -758,7 +758,17 @@ export default function PostsPage() {
                       {post.publishedMediaId && ` / media_id: ${post.publishedMediaId}`}
                     </p>
                     {post.error && (
-                      <p style={{ fontSize: 12, color: '#B91C1C', marginTop: 4 }}>{post.error}</p>
+                      <div style={{ fontSize: 12, color: '#B91C1C', marginTop: 4 }}>
+                        <p style={{ margin: 0 }}>{post.error}</p>
+                        {(post.lastAttemptAt || post.nextRetryAt) && (
+                          <p style={{ margin: '2px 0 0', color: '#6B7280' }}>
+                            {post.lastAttemptAt ? `最終試行: ${new Date(post.lastAttemptAt).toLocaleString('ja-JP')}` : ''}
+                            {post.lastAttemptAt && post.nextRetryAt ? ' / ' : ''}
+                            {post.nextRetryAt ? `次回再試行: ${new Date(post.nextRetryAt).toLocaleString('ja-JP')}` : ''}
+                            {` / 試行 ${post.attemptCount}回`}
+                          </p>
+                        )}
+                      </div>
                     )}
                     {post.campaignGateId && (
                       <div style={{ fontSize: 12, marginTop: 4 }}>

@@ -10,10 +10,11 @@ import {
   type MediaPost,
   type MediaPostMediaItem,
 } from '@ig-harness/db';
-import { jstNow } from '@ig-harness/db';
+import { jstNow, toJstString } from '@ig-harness/db';
 import type { InstagramClient } from '@ig-harness/ig-sdk';
 
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 4;
+const RETRY_DELAYS_MINUTES = [2, 5, 15] as const;
 const DEFAULT_QUOTA_TOTAL = 100;
 
 /**
@@ -33,7 +34,7 @@ export async function processMediaPosts(
   for (const post of due) {
     await startPost(db, igClient, post);
   }
-  const processing = await getProcessingMediaPosts(db, accountId);
+  const processing = await getProcessingMediaPosts(db, accountId, now);
   for (const post of processing) {
     await advancePost(db, igClient, post);
   }
@@ -84,6 +85,7 @@ async function startPost(
       // over to the next cycle without touching status/attempt_count.
       await updateMediaPost(db, post.id, {
         error: `publishing quota insufficient (${limit.quota_usage}/${total}, required=${requiredSlots}); will retry next cycle`,
+        next_retry_at: toJstString(new Date(Date.now() + 15 * 60_000)),
       });
       return false;
     }
@@ -145,6 +147,8 @@ async function startPost(
       status: 'processing',
       creation_id: creationId,
       child_creation_ids: childIds ? JSON.stringify(childIds) : undefined,
+      last_attempt_at: jstNow(),
+      next_retry_at: null,
       error: null,
     });
     return true;
@@ -180,6 +184,8 @@ async function advancePost(
       const published = await updateMediaPost(db, post.id, {
         status: 'published',
         published_media_id: result.id,
+        last_attempt_at: jstNow(),
+        next_retry_at: null,
         error: null,
       });
       if (published?.campaign_gate_id) await activateLinkedCampaign(db, published);
@@ -189,11 +195,14 @@ async function advancePost(
       // to published state without re-publishing.
       await updateMediaPost(db, post.id, {
         status: 'published',
+        next_retry_at: null,
         error: 'recovered: container already PUBLISHED; media id unrecorded',
       });
     } else if (status.status_code === 'ERROR' || status.status_code === 'EXPIRED') {
       await updateMediaPost(db, post.id, {
         status: 'failed',
+        last_attempt_at: jstNow(),
+        next_retry_at: null,
         error: `container ${status.status_code}: ${status.status ?? ''}`.trim(),
         campaign_activation_status: post.campaign_gate_id ? 'failed' : undefined,
         campaign_error: post.campaign_gate_id ? '投稿に失敗したため自動応答を開始できません' : undefined,
@@ -242,6 +251,8 @@ async function advanceStoryPost(
       if (status.status_code === 'ERROR' || status.status_code === 'EXPIRED') {
         await updateMediaPost(db, post.id, {
           status: 'failed',
+          last_attempt_at: jstNow(),
+          next_retry_at: null,
           error: `story ${index + 1}/${containerIds.length} container ${status.status_code}: ${status.status ?? ''}`.trim(),
         });
         return;
@@ -256,6 +267,8 @@ async function advanceStoryPost(
     await updateMediaPost(db, post.id, {
       status: 'published',
       published_media_id: lastPublishedMediaId,
+      last_attempt_at: jstNow(),
+      next_retry_at: null,
       error: null,
     });
   } catch (err) {
@@ -296,28 +309,71 @@ async function activateLinkedCampaign(db: D1Database, post: MediaPost): Promise<
 }
 
 /**
- * Transient errors bump attempt_count and retry next cycle; the 3rd
- * failure is terminal. Permission errors get an actionable message.
+ * Transient errors retry after 2, 5, then 15 minutes. Authentication and
+ * permission failures are terminal because repeating the same token cannot
+ * repair them. Other failures retain the bounded retry behaviour.
  */
 async function recordFailure(db: D1Database, post: MediaPost, err: unknown): Promise<void> {
   const attempts = post.attempt_count + 1;
-  const message = describeError(err);
-  if (attempts >= MAX_ATTEMPTS) {
+  const kind = classifyPublishError(err);
+  const terminal = kind === 'token' || kind === 'permission' || attempts >= MAX_ATTEMPTS;
+  const described = describeError(err);
+  const message = terminal && kind === 'transient'
+    ? `Meta側の一時エラーが${attempts}回続いたため自動再試行を停止しました。内容を確認してから再実行してください。 (${String(err instanceof Error ? err.message : err)})`
+    : described;
+  const attemptedAt = jstNow();
+  if (terminal) {
     await updateMediaPost(db, post.id, {
       status: 'failed',
       attempt_count: attempts,
+      last_attempt_at: attemptedAt,
+      next_retry_at: null,
       error: message,
       campaign_activation_status: post.campaign_gate_id ? 'failed' : undefined,
       campaign_error: post.campaign_gate_id ? '投稿に失敗したため自動応答を開始できません' : undefined,
     });
   } else {
-    await updateMediaPost(db, post.id, { attempt_count: attempts, error: message });
+    const delayMinutes = RETRY_DELAYS_MINUTES[Math.min(attempts - 1, RETRY_DELAYS_MINUTES.length - 1)]!;
+    await updateMediaPost(db, post.id, {
+      attempt_count: attempts,
+      last_attempt_at: attemptedAt,
+      next_retry_at: toJstString(new Date(Date.now() + delayMinutes * 60_000)),
+      error: message,
+    });
   }
+}
+
+type PublishErrorKind = 'transient' | 'token' | 'permission' | 'other';
+
+function classifyPublishError(err: unknown): PublishErrorKind {
+  const message = String(err instanceof Error ? err.message : err);
+  const code = message.match(/"code"\s*:\s*(\d+)/i)?.[1]
+    ?? message.match(/(?:Meta\s+)?code[=: ]+(\d+)/i)?.[1]
+    ?? null;
+  if (code === '190') return 'token';
+  if (code === '10' || code === '200' || /\(#10\)|permission|not authorized/i.test(message)) {
+    return 'permission';
+  }
+  if (
+    code === '2'
+    || /"is_transient"\s*:\s*true/i.test(message)
+    || /Instagram API error 5\d\d/i.test(message)
+  ) {
+    return 'transient';
+  }
+  return 'other';
 }
 
 function describeError(err: unknown): string {
   const message = String(err instanceof Error ? err.message : err);
-  if (/\(#10\)|permission|not authorized|oauth/i.test(message)) {
+  const kind = classifyPublishError(err);
+  if (kind === 'transient') {
+    return `Meta側の一時エラーです。自動再試行します。 (${message})`;
+  }
+  if (kind === 'token') {
+    return `トークンが無効または期限切れです。設定画面からアカウントを再認可してください。 (${message})`;
+  }
+  if (kind === 'permission') {
     return `権限エラー: トークンに instagram_business_content_publish スコープが必要です。設定画面からアカウントを再認可してください。 (${message})`;
   }
   return message;

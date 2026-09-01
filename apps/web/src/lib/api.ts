@@ -523,6 +523,8 @@ export interface MediaPostApi {
   creationId: string | null
   publishedMediaId: string | null
   attemptCount: number
+  lastAttemptAt: string | null
+  nextRetryAt: string | null
   error: string | null
   campaignGateId: string | null
   campaignActivationStatus: 'pending' | 'active' | 'failed' | 'canceled' | null
