@@ -7,7 +7,7 @@ describe('convertReelCoverToJpeg', () => {
     vi.unstubAllGlobals();
   });
 
-  it('re-encodes PNG input as a width-limited JPEG with a .jpg filename', async () => {
+  it('re-encodes and centre-crops PNG input to Meta\'s Reel cover canvas', async () => {
     const drawImage = vi.fn();
     const fillRect = vi.fn();
     const canvas = {
@@ -43,10 +43,20 @@ describe('convertReelCoverToJpeg', () => {
     expect(output.type).toBe('image/jpeg');
     expect(output.name).toBe('campaign.cover.jpg');
     expect(output.lastModified).toBe(123);
-    expect(canvas.width).toBe(1920);
-    expect(canvas.height).toBe(3413);
-    expect(fillRect).toHaveBeenCalledWith(0, 0, 1920, 3413);
-    expect(drawImage).toHaveBeenCalledOnce();
+    expect(canvas.width).toBe(420);
+    expect(canvas.height).toBe(654);
+    expect(fillRect).toHaveBeenCalledWith(0, 0, 420, 654);
+    expect(drawImage).toHaveBeenCalledWith(
+      expect.any(MockImage),
+      0,
+      expect.any(Number),
+      2400,
+      expect.any(Number),
+      0,
+      0,
+      420,
+      654,
+    );
     expect(canvas.toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/jpeg', 0.92);
     expect(revoke).toHaveBeenCalledWith('blob:test-cover');
   });

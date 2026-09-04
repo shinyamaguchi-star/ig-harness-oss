@@ -1,5 +1,6 @@
 const JPEG_MIME_TYPE = 'image/jpeg'
-const MAX_COVER_WIDTH = 1920
+const REEL_COVER_WIDTH = 420
+const REEL_COVER_HEIGHT = 654
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 const JPEG_QUALITIES = [0.92, 0.85, 0.75, 0.65]
 
@@ -41,7 +42,7 @@ function jpegFilename(filename: string): string {
 /**
  * Meta accepts Reel cover photos as JPEG only. Re-encode every selected
  * image in the browser so PNG input and JPEGs with a non-sRGB colour profile
- * both become a predictable JPEG before they reach R2 or the Graph API.
+ * both become a predictable 420x654 JPEG before they reach R2 or Graph API.
  */
 export async function convertReelCoverToJpeg(file: File): Promise<File> {
   if (!file.type.startsWith('image/')) {
@@ -53,12 +54,9 @@ export async function convertReelCoverToJpeg(file: File): Promise<File> {
     throw new Error('表紙画像のサイズを確認できませんでした')
   }
 
-  const scale = Math.min(1, MAX_COVER_WIDTH / image.naturalWidth)
-  const width = Math.max(1, Math.round(image.naturalWidth * scale))
-  const height = Math.max(1, Math.round(image.naturalHeight * scale))
   const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
+  canvas.width = REEL_COVER_WIDTH
+  canvas.height = REEL_COVER_HEIGHT
 
   const context = canvas.getContext('2d', { colorSpace: 'srgb' })
   if (!context) throw new Error('表紙画像を変換する機能を利用できません')
@@ -66,8 +64,35 @@ export async function convertReelCoverToJpeg(file: File): Promise<File> {
   // JPEG has no transparency. Use white rather than allowing transparent PNG
   // pixels to become an implementation-dependent dark background.
   context.fillStyle = '#FFFFFF'
-  context.fillRect(0, 0, width, height)
-  context.drawImage(image, 0, 0, width, height)
+  context.fillRect(0, 0, REEL_COVER_WIDTH, REEL_COVER_HEIGHT)
+
+  // Instagram's Reel cover canvas is 420x654 (about 1:1.55), not the
+  // video's 9:16 canvas. Centre-crop rather than stretch so text and people
+  // keep their proportions and the uploaded cover conforms exactly.
+  const targetRatio = REEL_COVER_WIDTH / REEL_COVER_HEIGHT
+  const sourceRatio = image.naturalWidth / image.naturalHeight
+  let sourceX = 0
+  let sourceY = 0
+  let sourceWidth = image.naturalWidth
+  let sourceHeight = image.naturalHeight
+  if (sourceRatio > targetRatio) {
+    sourceWidth = image.naturalHeight * targetRatio
+    sourceX = (image.naturalWidth - sourceWidth) / 2
+  } else if (sourceRatio < targetRatio) {
+    sourceHeight = image.naturalWidth / targetRatio
+    sourceY = (image.naturalHeight - sourceHeight) / 2
+  }
+  context.drawImage(
+    image,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    REEL_COVER_WIDTH,
+    REEL_COVER_HEIGHT,
+  )
 
   let jpeg: Blob | null = null
   for (const quality of JPEG_QUALITIES) {
