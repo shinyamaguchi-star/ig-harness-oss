@@ -2,7 +2,7 @@
  * Tests: media-publish state machine
  * scheduled → processing → published / failed, quota carry-over, retry cap.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@ig-harness/db', async (importOriginal) => {
   const original = await importOriginal<typeof import('@ig-harness/db')>();
@@ -29,7 +29,7 @@ import {
   updateEngagementGate,
   updateMediaPost,
 } from '@ig-harness/db';
-import { processMediaPosts, kickImmediate } from '../media-publish.js';
+import { assertReelCoverFetchable, processMediaPosts, kickImmediate } from '../media-publish.js';
 
 const db = {} as D1Database;
 
@@ -76,6 +76,10 @@ beforeEach(() => {
   vi.mocked(addGateTargetPost).mockResolvedValue(undefined);
   vi.mocked(updateEngagementGate).mockResolvedValue(true);
   vi.mocked(updateMediaPost).mockResolvedValue(null);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('processMediaPosts — scheduled posts', () => {
@@ -140,6 +144,10 @@ describe('processMediaPosts — scheduled posts', () => {
     });
     vi.mocked(getDueMediaPosts).mockResolvedValueOnce([post] as any);
     const client = makeClient();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      new Uint8Array([0xff, 0xd8, 0xff, 0xe0]),
+      { status: 206, headers: { 'Content-Type': 'image/jpeg', 'Content-Range': 'bytes 0-3/400000' } },
+    )));
 
     await processMediaPosts(db, client, 'acc-1');
 
@@ -149,6 +157,7 @@ describe('processMediaPosts — scheduled posts', () => {
         videoUrl: 'https://example.com/reel.mp4',
         coverUrl: 'https://example.com/cover.jpg',
         thumbOffsetMs: undefined,
+        shareToFeed: true,
       }),
     );
   });
@@ -165,7 +174,30 @@ describe('processMediaPosts — scheduled posts', () => {
     await processMediaPosts(db, client, 'acc-1');
 
     expect(client.createMediaContainer).toHaveBeenCalledWith(
-      expect.objectContaining({ thumbOffsetMs: 3200, coverUrl: undefined }),
+      expect.objectContaining({ thumbOffsetMs: 3200, coverUrl: undefined, shareToFeed: true }),
+    );
+  });
+
+  it('reel: does not create a Meta container when the requested cover is unavailable', async () => {
+    const post = makePost({
+      post_type: 'reel',
+      media: JSON.stringify([{ url: 'https://example.com/reel.mp4', type: 'video' }]),
+      cover_url: 'https://example.com/missing.jpg',
+    });
+    vi.mocked(getDueMediaPosts).mockResolvedValueOnce([post] as any);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 404 })));
+    const client = makeClient();
+
+    await processMediaPosts(db, client, 'acc-1');
+
+    expect(client.createMediaContainer).not.toHaveBeenCalled();
+    expect(updateMediaPost).toHaveBeenCalledWith(
+      db,
+      'post-1',
+      expect.objectContaining({
+        attempt_count: 1,
+        error: expect.stringContaining('reel cover preflight failed'),
+      }),
     );
   });
 
@@ -547,5 +579,30 @@ describe('kickImmediate', () => {
     const client = makeClient();
     await kickImmediate(db, client, 'post-1');
     expect(client.createMediaContainer).not.toHaveBeenCalled();
+  });
+});
+
+describe('assertReelCoverFetchable', () => {
+  it('accepts a ranged public JPEG response', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(
+      new Uint8Array([0xff, 0xd8, 0xff, 0xdb]),
+      { status: 206, headers: { 'Content-Type': 'image/jpeg', 'Content-Range': 'bytes 0-3/340538' } },
+    ));
+
+    await expect(assertReelCoverFetchable('https://example.com/cover.jpg', fetcher)).resolves.toBeUndefined();
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://example.com/cover.jpg',
+      expect.objectContaining({ headers: { Range: 'bytes=0-4095' } }),
+    );
+  });
+
+  it('rejects content that is labelled JPEG but has a different signature', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+      { status: 200, headers: { 'Content-Type': 'image/jpeg' } },
+    ));
+
+    await expect(assertReelCoverFetchable('https://example.com/cover.jpg', fetcher))
+      .rejects.toThrow('not a valid JPEG');
   });
 });

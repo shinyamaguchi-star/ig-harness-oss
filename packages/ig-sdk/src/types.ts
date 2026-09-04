@@ -242,6 +242,8 @@ export interface CreateContainerParams {
   coverUrl?: string;
   /** Video frame offset in milliseconds. Ignored by Meta when coverUrl exists. */
   thumbOffsetMs?: number;
+  /** Explicitly publish a Reel to both the profile Feed and Reels tab. */
+  shareToFeed?: boolean;
   children?: string[];
   isCarouselItem?: boolean;
 }

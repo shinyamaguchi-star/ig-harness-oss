@@ -325,6 +325,9 @@ export class InstagramClient {
     if (params.thumbOffsetMs !== undefined) {
       qs.set('thumb_offset', String(params.thumbOffsetMs));
     }
+    if (params.shareToFeed !== undefined) {
+      qs.set('share_to_feed', String(params.shareToFeed));
+    }
     if (params.children && params.children.length > 0) {
       qs.set('children', params.children.join(','));
     }

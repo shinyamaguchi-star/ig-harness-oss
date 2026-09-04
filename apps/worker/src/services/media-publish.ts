@@ -17,6 +17,33 @@ const MAX_ATTEMPTS = 4;
 const RETRY_DELAYS_MINUTES = [2, 5, 15] as const;
 const DEFAULT_QUOTA_TOTAL = 100;
 
+/** Verify the exact public asset Meta will fetch before creating a Reel. */
+export async function assertReelCoverFetchable(
+  coverUrl: string,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetcher(coverUrl, {
+      method: 'GET',
+      headers: { Range: 'bytes=0-4095' },
+    });
+  } catch (err) {
+    throw new Error(`reel cover preflight failed: public URL could not be fetched (${String(err)})`);
+  }
+  if (response.status !== 200 && response.status !== 206) {
+    throw new Error(`reel cover preflight failed: public URL returned HTTP ${response.status}`);
+  }
+  const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+  if (!contentType.startsWith('image/jpeg')) {
+    throw new Error(`reel cover preflight failed: expected image/jpeg but received ${contentType || 'no content-type'}`);
+  }
+  const signature = new Uint8Array(await response.arrayBuffer());
+  if (signature.length < 3 || signature[0] !== 0xff || signature[1] !== 0xd8 || signature[2] !== 0xff) {
+    throw new Error('reel cover preflight failed: response is not a valid JPEG file');
+  }
+}
+
 /**
  * Cron entry — advances every media post of one account through the
  * state machine: scheduled → processing → published / failed.
@@ -112,12 +139,16 @@ async function startPost(
       });
       creationId = parent.id;
     } else if (post.post_type === 'reel') {
+      if (post.cover_url) {
+        await assertReelCoverFetchable(post.cover_url);
+      }
       const created = await igClient.createMediaContainer({
         videoUrl: media[0].url,
         mediaType: 'REELS',
         caption: post.caption ?? undefined,
         coverUrl: post.cover_url ?? undefined,
         thumbOffsetMs: post.cover_url ? undefined : post.thumb_offset_ms ?? undefined,
+        shareToFeed: true,
       });
       creationId = created.id;
     } else if (post.post_type === 'story') {
@@ -358,6 +389,7 @@ function classifyPublishError(err: unknown): PublishErrorKind {
     code === '2'
     || /"is_transient"\s*:\s*true/i.test(message)
     || /Instagram API error 5\d\d/i.test(message)
+    || /reel cover preflight failed/i.test(message)
   ) {
     return 'transient';
   }

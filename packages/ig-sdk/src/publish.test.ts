@@ -56,10 +56,12 @@ describe('InstagramClient content publishing', () => {
       mediaType: 'REELS',
       coverUrl: 'https://example.com/cover.jpg',
       thumbOffsetMs: 2400,
+      shareToFeed: true,
     });
     const parsed = new URL(fetchMock.mock.calls[0][0] as string);
     expect(parsed.searchParams.get('cover_url')).toBe('https://example.com/cover.jpg');
     expect(parsed.searchParams.get('thumb_offset')).toBe('2400');
+    expect(parsed.searchParams.get('share_to_feed')).toBe('true');
   });
 
   it('createMediaContainer: carousel parent sets children csv + media_type=CAROUSEL', async () => {
