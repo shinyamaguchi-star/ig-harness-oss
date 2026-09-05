@@ -254,7 +254,7 @@ export default function BroadcastsPage() {
       const result = await broadcastsApi.send(item.id)
       setNotice(result.status === 'sent'
         ? `送信完了：成功 ${result.successCount}件 / 失敗 ${result.failureCount}件`
-        : `配信を開始しました。現在 成功 ${result.successCount}件 / 失敗 ${result.failureCount}件 / 対象 ${result.totalTarget}件です。残りは5分ごとに最大50件ずつ自動で再開します。`)
+        : `配信を開始しました。現在 成功 ${result.successCount}件 / 失敗 ${result.failureCount}件 / 対象 ${result.totalTarget}件です。残りは約2分30秒ごとに最大50件ずつ自動で再開します。`)
       await load()
       if (result.failureCount > 0) await showResults(result.id, 'failed')
     } catch (err) {
@@ -416,7 +416,7 @@ export default function BroadcastsPage() {
                     <div>
                       <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{item.name}</h3><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.classes}`}>{badge.label}</span>{hasFailures && <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">要確認</span>}</div>
                       <p className="mt-1 text-xs text-gray-500">{item.messageType === 'text' ? '文章' : item.messageType === 'image' ? '画像' : 'DMテンプレート'} · {parseTagId(item.tagFilter) ? 'タグ指定' : '全対象者'}{item.scheduledAt ? ` · 予約 ${new Date(item.scheduledAt).toLocaleString('ja-JP')}` : ''}</p>
-                      {(item.status === 'sending' || item.status === 'sent') && <p className="mt-2 text-sm"><span className="text-green-700">成功 {item.successCount}件</span><span className="mx-2 text-gray-300">/</span><span className={item.failureCount ? 'text-red-700' : 'text-gray-500'}>失敗 {item.failureCount}件</span><span className="mx-2 text-gray-300">/</span>対象 {item.totalTarget}件{item.status === 'sending' ? '（5分ごとに最大50件ずつ継続）' : ''}</p>}
+                      {(item.status === 'sending' || item.status === 'sent') && <p className="mt-2 text-sm"><span className="text-green-700">成功 {item.successCount}件</span><span className="mx-2 text-gray-300">/</span><span className={item.failureCount ? 'text-red-700' : 'text-gray-500'}>失敗 {item.failureCount}件</span><span className="mx-2 text-gray-300">/</span>対象 {item.totalTarget}件{item.status === 'sending' ? '（約2分30秒ごとに最大50件ずつ継続）' : ''}</p>}
                       {item.lastError && <p className="mt-2 rounded bg-red-50 px-3 py-2 text-xs text-red-700">{item.lastError}</p>}
                     </div>
                     <div className="flex flex-wrap gap-2">

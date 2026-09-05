@@ -645,7 +645,7 @@ export default function PostsPage() {
           {mode === 'schedule' && (
             <>
               <p style={{ fontSize: 12, color: '#9CA3AF', marginTop: 4 }}>
-                ※ 公開は指定時刻から最大5分ずれます(5分毎のバッチ処理)
+                ※ 公開は指定時刻から最大3分程度ずれる場合があります（2分・3分交互の定期処理）
               </p>
               {postType !== 'story' && (
                 <div style={{ marginTop: 14, padding: 14, border: '1px solid #D1D5DB', borderRadius: 10, background: '#FAFAFA' }}>

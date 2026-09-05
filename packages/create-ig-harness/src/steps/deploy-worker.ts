@@ -46,7 +46,7 @@ binding = "IMAGES"
 bucket_name = "${options.r2BucketName}"
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * * *", "2-59/5 * * * *"]
 `;
   writeFileSync(deployTomlPath, deployToml);
 
