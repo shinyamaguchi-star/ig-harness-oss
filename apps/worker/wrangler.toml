@@ -19,6 +19,6 @@ binding = "IMAGES"
 bucket_name = "YOUR_R2_BUCKET"
 
 [triggers]
-# Cloudflare Cron has one-minute precision. These two schedules alternate
-# 2-minute and 3-minute gaps, averaging one run every 2.5 minutes.
-crons = ["*/5 * * * *", "2-59/5 * * * *"]
+# One trigger stays within Cloudflare's free cron quota. The worker runs
+# priority tasks each minute and gates broadcasts to minutes 0/2/5/7/... .
+crons = ["* * * * *"]

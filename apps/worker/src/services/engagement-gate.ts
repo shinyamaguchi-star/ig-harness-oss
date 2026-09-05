@@ -570,7 +570,7 @@ export function nextFollowupAt(
 /**
  * Cron-driven processor. Finds gate_deliveries whose next_followup_at has
  * passed, sends the scheduled message, and advances the counter + next
- * schedule. Runs every cron tick (alternating 2/3 min). Caps work per tick to
+ * schedule. Runs every cron tick (every minute). Caps work per tick to
  * avoid cron timeouts.
  *
  * 24h-window guard: Meta only allows sending outside the 24h window for

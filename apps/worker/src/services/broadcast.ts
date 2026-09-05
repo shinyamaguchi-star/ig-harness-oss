@@ -16,6 +16,14 @@ import { recordDmFailure } from '../lib/health.js';
 const BATCH_SIZE = 50; // IG API is more conservative than LINE
 const STALE_CLAIM_MS = 10 * 60 * 1000;
 
+/** Cloudflare Cron has minute precision. With one every-minute trigger, these
+ * minute slots produce alternating 2- and 3-minute gaps (average 2.5 min)
+ * without consuming two cron-trigger slots per Worker. */
+export function isBroadcastBatchMinute(date = new Date()): boolean {
+  const minuteInFive = date.getUTCMinutes() % 5;
+  return minuteInFive === 0 || minuteInFive === 2;
+}
+
 export function describeBroadcastFailure(err: unknown): { code: string | null; message: string } {
   const raw = err instanceof Error ? err.message : String(err);
   const codeMatch = raw.match(/(?:"code"\s*:\s*|code[=: ]+)(\d+)/i);
@@ -158,6 +166,7 @@ export async function processScheduledBroadcasts(
   workerUrl?: string,
   accountId?: string,
 ): Promise<void> {
+  if (!isBroadcastBatchMinute()) return;
   // When an accountId is given, the due extraction is scoped at the SQL level
   // so each account's cron tick only picks up its own scheduled broadcasts.
   const allBroadcasts = await getBroadcasts(db, accountId ? { accountId } : {});

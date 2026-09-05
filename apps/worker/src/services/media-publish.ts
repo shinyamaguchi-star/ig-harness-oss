@@ -47,7 +47,7 @@ export async function assertReelCoverFetchable(
 /**
  * Cron entry — advances every media post of one account through the
  * state machine: scheduled → processing → published / failed.
- * Called on the alternating 2/3-minute cron schedule.
+ * Called every minute from the scheduled() handler.
  * `now` must be a JST (+09:00) string — scheduled_at comparison is a
  * plain SQL string compare, so formats must match (see Task 1 note).
  */

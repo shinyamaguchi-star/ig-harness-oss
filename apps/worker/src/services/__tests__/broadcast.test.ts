@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { describeBroadcastFailure, sendIgMessage } from '../broadcast.js';
+import { describeBroadcastFailure, isBroadcastBatchMinute, sendIgMessage } from '../broadcast.js';
+
+describe('isBroadcastBatchMinute', () => {
+  it.each([0, 2, 5, 7, 10, 12, 55, 57])('runs at minute %i', (minute) => {
+    expect(isBroadcastBatchMinute(new Date(Date.UTC(2026, 8, 5, 9, minute)))).toBe(true);
+  });
+
+  it.each([1, 3, 4, 6, 8, 9, 58, 59])('waits at minute %i', (minute) => {
+    expect(isBroadcastBatchMinute(new Date(Date.UTC(2026, 8, 5, 9, minute)))).toBe(false);
+  });
+});
 
 describe('describeBroadcastFailure', () => {
   it('turns expired-token errors into an actionable Japanese message', () => {
