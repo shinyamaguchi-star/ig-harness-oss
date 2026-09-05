@@ -2,18 +2,19 @@ import {
   getBroadcastById,
   getBroadcasts,
   updateBroadcastStatus,
-  getFriendsByTag,
-  clearBroadcastDeliveries,
-  recordBroadcastDelivery,
+  initializeBroadcastQueue,
+  failStaleBroadcastClaims,
+  getPendingBroadcastQueue,
+  claimBroadcastQueueItem,
+  completeBroadcastQueueItem,
+  getBroadcastQueueCounts,
 } from '@ig-harness/db';
 import type { Broadcast } from '@ig-harness/db';
 import type { InstagramClient, RichMessageBlock } from '@ig-harness/ig-sdk';
-import { calculateStaggerDelay, sleep } from './stealth.js';
 import { recordDmFailure } from '../lib/health.js';
 
 const BATCH_SIZE = 50; // IG API is more conservative than LINE
-
-type BroadcastRecipient = { id: number; igsid: string };
+const STALE_CLAIM_MS = 10 * 60 * 1000;
 
 export function describeBroadcastFailure(err: unknown): { code: string | null; message: string } {
   const raw = err instanceof Error ? err.message : String(err);
@@ -49,114 +50,100 @@ export async function processBroadcastSend(
     throw new Error(`Broadcast ${broadcastId} not found`);
   }
 
-  await clearBroadcastDeliveries(db, broadcastId);
-  await updateBroadcastStatus(db, broadcastId, 'sending', {
-    totalSent: 0,
-    totalTarget: 0,
-    successCount: 0,
-    failureCount: 0,
-    lastError: null,
-  });
-
-  let totalSent = 0;
-  let failureCount = 0;
-
   try {
     const messageBody = JSON.parse(broadcast.body) as Record<string, unknown>;
-    let recipients: BroadcastRecipient[];
-
-    if (!broadcast.tag_filter) {
-      // No tag filter — send to all of the owning account's followers.
-      // account_id NULL (legacy pre-backfill rows / single-account deploys
-      // before seed) keeps the unscoped behavior.
-      const stmt = broadcast.account_id
-        ? db.prepare(`SELECT id, igsid FROM followers WHERE account_id = ?`).bind(broadcast.account_id)
-        : db.prepare(`SELECT id, igsid FROM followers`);
-      const followers = await stmt.all<{ id: number; igsid: string }>();
-      recipients = followers.results;
-    } else {
-      // tag_filter present — parse and send to matching followers
+    let tagId: string | undefined;
+    if (broadcast.tag_filter) {
       const tagFilter = JSON.parse(broadcast.tag_filter) as { tagId?: string };
-      if (!tagFilter.tagId) {
-        throw new Error('tag_filter must contain tagId');
-      }
-
-      recipients = await getFriendsByTag(db, tagFilter.tagId, {
-        accountId: broadcast.account_id ?? undefined,
-      });
+      if (!tagFilter.tagId) throw new Error('tag_filter must contain tagId');
+      tagId = tagFilter.tagId;
     }
 
-    await updateBroadcastStatus(db, broadcastId, 'sending', { totalTarget: recipients.length });
+    // Snapshot once. On later cron ticks the existing queue is reused, so
+    // newly-added followers do not shift the audience and completed users are
+    // never selected again.
+    const totalTarget = await initializeBroadcastQueue(db, {
+      broadcastId,
+      accountId: broadcast.account_id,
+      tagId,
+    });
+    await updateBroadcastStatus(db, broadcastId, 'sending', { totalTarget, lastError: null });
 
-    for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
-      const batch = recipients.slice(i, i + BATCH_SIZE);
-      const batchIndex = Math.floor(i / BATCH_SIZE);
+    // A Worker may stop after Meta accepted a send but before our checkpoint.
+    // Treat that one recipient as uncertain instead of retrying and risking a
+    // duplicate; all remaining pending recipients still resume normally.
+    await failStaleBroadcastClaims(
+      db,
+      broadcastId,
+      new Date(Date.now() - STALE_CLAIM_MS).toISOString(),
+    );
 
-      if (batchIndex > 0) {
-        const delay = calculateStaggerDelay(recipients.length, batchIndex);
-        await sleep(delay);
-      }
-
-      for (const recipient of batch) {
-        try {
-          await sendIgMessage(igClient, recipient.igsid, broadcast.message_type, messageBody);
-        } catch (err) {
-          failureCount++;
-          const failure = describeBroadcastFailure(err);
-          console.error(`Broadcast send failed for follower ${recipient.id}:`, err);
-          await Promise.all([
-            recordBroadcastDelivery(db, {
-              broadcastId,
-              followerId: recipient.id,
-              recipientIgsid: recipient.igsid,
-              status: 'failed',
-              errorCode: failure.code,
-              errorMessage: failure.message,
-            }),
-            recordDmFailure(db, accountId ?? broadcast.account_id ?? 'unknown').catch(() => {}),
-          ]);
-          continue;
-        }
-
-        totalSent++;
-        await Promise.all([
-          db
-            .prepare(
-              `INSERT INTO messages_log (follower_id, direction, message_type, body, trigger_source)
-               VALUES (?, 'out', ?, ?, 'broadcast')`,
-            )
-            .bind(recipient.id, broadcast.message_type, broadcast.body)
-            .run(),
-          recordBroadcastDelivery(db, {
-            broadcastId,
-            followerId: recipient.id,
-            recipientIgsid: recipient.igsid,
-            status: 'success',
-          }),
-        ]).catch((err) => {
-          // The Instagram send already succeeded. Do not mislabel it as a
-          // delivery failure just because auxiliary logging failed.
-          console.error(`Broadcast success logging failed for follower ${recipient.id}:`, err);
+    const batch = await getPendingBroadcastQueue(db, broadcastId, BATCH_SIZE);
+    for (const recipient of batch) {
+      if (!(await claimBroadcastQueueItem(db, recipient.id))) continue;
+      try {
+        await sendIgMessage(igClient, recipient.recipient_igsid, broadcast.message_type, messageBody);
+        await completeBroadcastQueueItem(db, {
+          id: recipient.id,
+          broadcastId,
+          followerId: recipient.follower_id,
+          recipientIgsid: recipient.recipient_igsid,
+          status: 'success',
         });
+        // Delivery is already checkpointed. Auxiliary chat logging must not
+        // turn a successful send into a retry or duplicate.
+        await db
+          .prepare(
+            `INSERT INTO messages_log (follower_id, direction, message_type, body, trigger_source)
+             VALUES (?, 'out', ?, ?, 'broadcast')`,
+          )
+          .bind(recipient.follower_id, broadcast.message_type, broadcast.body)
+          .run()
+          .catch((err) => console.error(`Broadcast success logging failed for follower ${recipient.follower_id}:`, err));
+      } catch (err) {
+        const failure = describeBroadcastFailure(err);
+        console.error(`Broadcast send failed for follower ${recipient.follower_id}:`, err);
+        await completeBroadcastQueueItem(db, {
+          id: recipient.id,
+          broadcastId,
+          followerId: recipient.follower_id,
+          recipientIgsid: recipient.recipient_igsid,
+          status: 'failed',
+          errorCode: failure.code,
+          errorMessage: failure.message,
+        });
+        await recordDmFailure(db, accountId ?? broadcast.account_id ?? 'unknown').catch(() => {});
       }
     }
 
-    const lastError = failureCount > 0
-      ? `${failureCount}件の送信に失敗しました。配信結果から理由を確認してください。`
+    const counts = await getBroadcastQueueCounts(db, broadcastId);
+    const complete = counts.pending === 0 && counts.processing === 0;
+    const lastError = counts.failed > 0
+      ? `${counts.failed}件の送信に失敗しました。配信結果から理由を確認してください。`
       : null;
-    await updateBroadcastStatus(db, broadcastId, 'sent', {
-      totalSent,
-      totalTarget: recipients.length,
-      successCount: totalSent,
-      failureCount,
+    await updateBroadcastStatus(db, broadcastId, complete ? 'sent' : 'sending', {
+      totalSent: counts.success,
+      totalTarget: counts.total,
+      successCount: counts.success,
+      failureCount: counts.failed,
       lastError,
     });
   } catch (err) {
     const failure = describeBroadcastFailure(err);
-    await updateBroadcastStatus(db, broadcastId, 'draft', {
-      totalSent,
-      successCount: totalSent,
-      failureCount,
+    const counts = await getBroadcastQueueCounts(db, broadcastId).catch(() => ({
+      total: broadcast.total_target,
+      pending: 0,
+      processing: 0,
+      success: broadcast.success_count,
+      failed: broadcast.failure_count,
+    }));
+    // Keep the job resumable. A later cron tick continues recipients that are
+    // still pending; recipients checkpointed success/failed are not selected.
+    await updateBroadcastStatus(db, broadcastId, 'sending', {
+      totalSent: counts.success,
+      totalTarget: counts.total,
+      successCount: counts.success,
+      failureCount: counts.failed,
       lastError: failure.message,
     });
     throw err;
@@ -176,14 +163,19 @@ export async function processScheduledBroadcasts(
   const allBroadcasts = await getBroadcasts(db, accountId ? { accountId } : {});
   const nowMs = Date.now();
 
-  const scheduled = allBroadcasts.filter(
+  const runnable = allBroadcasts.filter(
     (b) =>
-      b.status === 'scheduled' &&
-      b.scheduled_at !== null &&
-      new Date(b.scheduled_at).getTime() <= nowMs,
+      b.status === 'sending' ||
+      (b.status === 'scheduled' &&
+        b.scheduled_at !== null &&
+        new Date(b.scheduled_at).getTime() <= nowMs),
   );
 
-  for (const broadcast of scheduled) {
+  // Exactly one 50-recipient batch per account/tick. Cron always processes
+  // posts and campaign deliveries before reaching this function, and bulk
+  // work therefore cannot consume the entire invocation.
+  const broadcast = runnable[0];
+  if (broadcast) {
     try {
       await processBroadcastSend(db, igClient, broadcast.id, workerUrl, accountId);
     } catch (err) {

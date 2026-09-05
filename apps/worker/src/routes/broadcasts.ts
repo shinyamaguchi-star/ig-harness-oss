@@ -7,6 +7,8 @@ import {
   deleteBroadcast,
   getIgAccountById,
   getBroadcastDeliveries,
+  clearBroadcastDeliveries,
+  clearBroadcastQueue,
 } from '@ig-harness/db';
 import type { Broadcast as DbBroadcast, BroadcastMessageType } from '@ig-harness/db';
 import { describeBroadcastFailure, processBroadcastSend } from '../services/broadcast.js';
@@ -300,6 +302,12 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
       : await resolveAccount(c);
     if (!account) return c.json({ success: false, error: 'account not found' }, 404);
     const igClient = await getAccountClient(c.env, c.env.DB, account);
+    // A draft/scheduled job has not started yet. Clear any abandoned setup
+    // rows before freezing its audience for the first time.
+    await Promise.all([
+      clearBroadcastDeliveries(c.env.DB, existing.id),
+      clearBroadcastQueue(c.env.DB, existing.id),
+    ]);
     await processBroadcastSend(c.env.DB, igClient, existing.id, c.env.WORKER_URL, account.id);
 
     const result = await getBroadcastById(c.env.DB, existing.id);

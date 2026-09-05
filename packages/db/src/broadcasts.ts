@@ -222,6 +222,205 @@ export async function clearBroadcastDeliveries(
   await db.prepare('DELETE FROM broadcast_deliveries WHERE broadcast_id = ?').bind(broadcastId).run();
 }
 
+export type BroadcastQueueStatus = 'pending' | 'processing' | 'success' | 'failed';
+
+export interface BroadcastQueueItem {
+  id: number;
+  broadcast_id: number;
+  follower_id: number | null;
+  recipient_igsid: string;
+  status: BroadcastQueueStatus;
+  error_code: string | null;
+  error_message: string | null;
+  claimed_at: string | null;
+  completed_at: string | null;
+}
+
+/** Remove a previous draft's queue before its first send. */
+export async function clearBroadcastQueue(
+  db: D1Database,
+  broadcastId: number | string,
+): Promise<void> {
+  await db.prepare('DELETE FROM broadcast_queue WHERE broadcast_id = ?').bind(broadcastId).run();
+}
+
+/**
+ * Freeze the audience at send-start. Existing result rows are imported first
+ * so a broadcast left in `sending` by the old implementation can continue
+ * without intentionally resending recipients already checkpointed there.
+ */
+export async function initializeBroadcastQueue(
+  db: D1Database,
+  input: { broadcastId: number | string; accountId: string | null; tagId?: string },
+): Promise<number> {
+  const existing = await db
+    .prepare('SELECT COUNT(*) AS count FROM broadcast_queue WHERE broadcast_id = ?')
+    .bind(input.broadcastId)
+    .first<{ count: number }>();
+  if (Number(existing?.count ?? 0) > 0) return Number(existing!.count);
+
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO broadcast_queue
+         (broadcast_id, follower_id, recipient_igsid, status, error_code, error_message, completed_at)
+       SELECT broadcast_id, follower_id, recipient_igsid, status, error_code, error_message, attempted_at
+       FROM broadcast_deliveries
+       WHERE broadcast_id = ?`,
+    )
+    .bind(input.broadcastId)
+    .run();
+
+  const accountCondition = input.accountId ? 'f.account_id = ?' : '1 = 1';
+  const tagJoin = input.tagId
+    ? 'INNER JOIN follower_tags ft ON ft.follower_id = f.id AND ft.tag_id = ?'
+    : '';
+  const binds: unknown[] = [input.broadcastId];
+  if (input.tagId) binds.push(input.tagId);
+  if (input.accountId) binds.push(input.accountId);
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO broadcast_queue
+         (broadcast_id, follower_id, recipient_igsid, status)
+       SELECT ?, f.id, f.igsid, 'pending'
+       FROM followers f
+       ${tagJoin}
+       WHERE ${accountCondition}`,
+    )
+    .bind(...binds)
+    .run();
+
+  const total = await db
+    .prepare('SELECT COUNT(*) AS count FROM broadcast_queue WHERE broadcast_id = ?')
+    .bind(input.broadcastId)
+    .first<{ count: number }>();
+  return Number(total?.count ?? 0);
+}
+
+/** Convert abandoned in-flight rows to a visible uncertain failure.
+ * Retrying these automatically could duplicate a DM that Meta accepted just
+ * before the Worker stopped, so pending recipients continue but these do not.
+ */
+export async function failStaleBroadcastClaims(
+  db: D1Database,
+  broadcastId: number | string,
+  staleBefore: string,
+): Promise<void> {
+  await db.batch([
+    db.prepare(
+      `INSERT INTO broadcast_deliveries
+         (broadcast_id, follower_id, recipient_igsid, status, error_code, error_message)
+       SELECT broadcast_id, follower_id, recipient_igsid, 'failed', 'DELIVERY_UNCERTAIN',
+              '前回処理が途中で停止したため送信結果を確認できません。重複防止のため自動再送していません。'
+       FROM broadcast_queue
+       WHERE broadcast_id = ? AND status = 'processing' AND claimed_at < ?`,
+    ).bind(broadcastId, staleBefore),
+    db.prepare(
+      `UPDATE broadcast_queue
+       SET status = 'failed', error_code = 'DELIVERY_UNCERTAIN',
+           error_message = '前回処理が途中で停止したため送信結果を確認できません。重複防止のため自動再送していません。',
+           completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now'))
+       WHERE broadcast_id = ? AND status = 'processing' AND claimed_at < ?`,
+    ).bind(broadcastId, staleBefore),
+  ]);
+}
+
+export async function getPendingBroadcastQueue(
+  db: D1Database,
+  broadcastId: number | string,
+  limit = 50,
+): Promise<BroadcastQueueItem[]> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM broadcast_queue
+       WHERE broadcast_id = ? AND status = 'pending'
+       ORDER BY id ASC LIMIT ?`,
+    )
+    .bind(broadcastId, Math.min(Math.max(limit, 1), 50))
+    .all<BroadcastQueueItem>();
+  return result.results;
+}
+
+export async function claimBroadcastQueueItem(
+  db: D1Database,
+  id: number | string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE broadcast_queue
+       SET status = 'processing', claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now'))
+       WHERE id = ? AND status = 'pending'`,
+    )
+    .bind(id)
+    .run();
+  return Number(result.meta.changes ?? 0) === 1;
+}
+
+export async function completeBroadcastQueueItem(
+  db: D1Database,
+  input: {
+    id: number | string;
+    broadcastId: number | string;
+    followerId: number | string | null;
+    recipientIgsid: string;
+    status: 'success' | 'failed';
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  },
+): Promise<void> {
+  await db.batch([
+    db.prepare(
+      `UPDATE broadcast_queue
+       SET status = ?, error_code = ?, error_message = ?,
+           completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now'))
+       WHERE id = ? AND status = 'processing'`,
+    ).bind(input.status, input.errorCode ?? null, input.errorMessage ?? null, input.id),
+    db.prepare(
+      `INSERT INTO broadcast_deliveries
+         (broadcast_id, follower_id, recipient_igsid, status, error_code, error_message)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      input.broadcastId,
+      input.followerId,
+      input.recipientIgsid,
+      input.status,
+      input.errorCode ?? null,
+      input.errorMessage ?? null,
+    ),
+  ]);
+}
+
+export interface BroadcastQueueCounts {
+  total: number;
+  pending: number;
+  processing: number;
+  success: number;
+  failed: number;
+}
+
+export async function getBroadcastQueueCounts(
+  db: D1Database,
+  broadcastId: number | string,
+): Promise<BroadcastQueueCounts> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+              SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing,
+              SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
+              SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+       FROM broadcast_queue WHERE broadcast_id = ?`,
+    )
+    .bind(broadcastId)
+    .first<Record<keyof BroadcastQueueCounts, number | null>>();
+  return {
+    total: Number(row?.total ?? 0),
+    pending: Number(row?.pending ?? 0),
+    processing: Number(row?.processing ?? 0),
+    success: Number(row?.success ?? 0),
+    failed: Number(row?.failed ?? 0),
+  };
+}
+
 export async function recordBroadcastDelivery(
   db: D1Database,
   input: {
