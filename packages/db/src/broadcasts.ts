@@ -284,7 +284,28 @@ export async function initializeBroadcastQueue(
        SELECT ?, f.id, f.igsid, 'pending'
        FROM followers f
        ${tagJoin}
-       WHERE ${accountCondition}`,
+       LEFT JOIN (
+         SELECT follower_id, MAX(activity_at) AS last_activity_at
+         FROM (
+           -- A received DM is a direct reaction. Legacy comment-rule sends
+           -- are also included because they prove that a comment was received.
+           SELECT follower_id, created_at AS activity_at
+           FROM messages_log
+           WHERE direction = 'in' OR trigger_source = 'comment_rule'
+           UNION ALL
+           -- Campaign deliveries cover comments, DM keywords and story
+           -- interactions handled by the newer engagement-gate flow.
+           SELECT follower_id, triggered_at AS activity_at
+           FROM gate_deliveries
+         ) interaction_events
+         GROUP BY follower_id
+       ) recent_activity ON recent_activity.follower_id = f.id
+       WHERE ${accountCondition}
+       -- Queue ids determine batch order. People with the latest observed
+       -- interaction are inserted first; people without history follow.
+       ORDER BY recent_activity.last_activity_at DESC NULLS LAST,
+                f.first_seen_at DESC,
+                f.id DESC`,
     )
     .bind(...binds)
     .run();

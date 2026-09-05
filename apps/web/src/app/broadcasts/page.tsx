@@ -385,6 +385,7 @@ export default function BroadcastsPage() {
               </select>
             )}
             <p className="mt-2 text-xs text-gray-500">現在の対象人数：{audienceCount == null ? '未取得' : `${audienceCount}人`}</p>
+            <p className="mt-1 text-xs text-gray-500">送信開始時点で、最近DM・コメントなどの反応があった人から優先して送信します。</p>
           </fieldset>
 
           <fieldset>
