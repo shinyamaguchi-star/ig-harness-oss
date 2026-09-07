@@ -21,7 +21,32 @@ const DEFAULT_QUOTA_TOTAL = 100;
 export async function assertReelCoverFetchable(
   coverUrl: string,
   fetcher: typeof fetch = fetch,
+  images?: R2Bucket,
 ): Promise<void> {
+  // IG Harness uploads covers to this Worker's R2 bucket. Read that binding
+  // directly: fetching our own workers.dev URL can be rejected by
+  // Cloudflare's Worker-to-Worker/self-fetch restrictions.
+  if (images) {
+    const parsed = new URL(coverUrl);
+    const match = parsed.pathname.match(/^\/images\/([^/]+)$/);
+    if (match) {
+      const key = decodeURIComponent(match[1]);
+      const object = await images.get(key, { range: { offset: 0, length: 4096 } });
+      if (!object) {
+        throw new Error('reel cover preflight failed: stored image not found');
+      }
+      const contentType = (object.httpMetadata?.contentType ?? '').toLowerCase();
+      if (!contentType.startsWith('image/jpeg')) {
+        throw new Error(`reel cover preflight failed: expected image/jpeg but received ${contentType || 'no content-type'}`);
+      }
+      const signature = new Uint8Array(await object.arrayBuffer());
+      if (signature.length < 3 || signature[0] !== 0xff || signature[1] !== 0xd8 || signature[2] !== 0xff) {
+        throw new Error('reel cover preflight failed: response is not a valid JPEG file');
+      }
+      return;
+    }
+  }
+
   let response: Response;
   try {
     response = await fetcher(coverUrl, {
@@ -56,10 +81,11 @@ export async function processMediaPosts(
   igClient: InstagramClient,
   accountId: string,
   now: string = jstNow(),
+  images?: R2Bucket,
 ): Promise<void> {
   const due = await getDueMediaPosts(db, accountId, now);
   for (const post of due) {
-    await startPost(db, igClient, post);
+    await startPost(db, igClient, post, images);
   }
   const processing = await getProcessingMediaPosts(db, accountId, now);
   for (const post of processing) {
@@ -82,10 +108,11 @@ export async function kickImmediate(
   db: D1Database,
   igClient: InstagramClient,
   postId: string,
+  images?: R2Bucket,
 ): Promise<void> {
   const post = await getMediaPostById(db, postId);
   if (!post || post.status !== 'scheduled') return;
-  const started = await startPost(db, igClient, post);
+  const started = await startPost(db, igClient, post, images);
   if (!started) return;
   const refreshed = await getMediaPostById(db, postId);
   if (refreshed && refreshed.status === 'processing') {
@@ -98,6 +125,7 @@ async function startPost(
   db: D1Database,
   igClient: InstagramClient,
   post: MediaPost,
+  images?: R2Bucket,
 ): Promise<boolean> {
   try {
     const media = JSON.parse(post.media) as MediaPostMediaItem[];
@@ -140,7 +168,7 @@ async function startPost(
       creationId = parent.id;
     } else if (post.post_type === 'reel') {
       if (post.cover_url) {
-        await assertReelCoverFetchable(post.cover_url);
+        await assertReelCoverFetchable(post.cover_url, fetch, images);
       }
       const created = await igClient.createMediaContainer({
         videoUrl: media[0].url,

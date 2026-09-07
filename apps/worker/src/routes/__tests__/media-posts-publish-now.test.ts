@@ -89,6 +89,7 @@ const POST_OWNED_BY_B = {
 function makeEnv() {
   return {
     DB: {} as D1Database,
+    IMAGES: {} as R2Bucket,
     IG_APP_SECRET: 'secret',
     IG_ACCESS_TOKEN: 'tok',
     IG_USER_ID: 'ig-A',
@@ -245,6 +246,8 @@ describe('Reel cover availability and safe retry', () => {
     expect(res.status).toBe(200);
     expect(mediaPublishMocks.assertReelCoverFetchable).toHaveBeenCalledWith(
       FAILED_COVER_POST.cover_url,
+      expect.any(Function),
+      expect.anything(),
     );
     expect(dbMocks.retryFailedCoverMediaPost).toHaveBeenCalledWith(
       expect.anything(),
@@ -256,6 +259,7 @@ describe('Reel cover availability and safe retry', () => {
       expect.anything(),
       expect.anything(),
       'post-1',
+      expect.anything(),
     );
   });
 

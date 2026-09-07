@@ -339,7 +339,7 @@ async function scheduled(
     // of processMediaPosts(), so a successful post becomes reply-ready before
     // any bulk/backfill work can consume this invocation's time or subrequests.
     try {
-      await processMediaPosts(env.DB, igClient, account.id);
+      await processMediaPosts(env.DB, igClient, account.id, undefined, env.IMAGES);
     } catch (err) {
       console.error(`[cron] processMediaPosts failed for account=${account.id}:`, err);
     }

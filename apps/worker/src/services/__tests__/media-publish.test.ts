@@ -83,6 +83,29 @@ afterEach(() => {
 });
 
 describe('processMediaPosts — scheduled posts', () => {
+  it('validates an IG Harness cover directly through R2 without self-fetching the Worker URL', async () => {
+    const fetcher = vi.fn();
+    const images = {
+      get: vi.fn().mockResolvedValue({
+        httpMetadata: { contentType: 'image/jpeg' },
+        arrayBuffer: vi.fn().mockResolvedValue(
+          new Uint8Array([0xff, 0xd8, 0xff, 0xe0]).buffer,
+        ),
+      }),
+    } as unknown as R2Bucket;
+
+    await assertReelCoverFetchable(
+      'https://ig-harness-example.workers.dev/images/cover.jpg',
+      fetcher as unknown as typeof fetch,
+      images,
+    );
+
+    expect(images.get).toHaveBeenCalledWith('cover.jpg', {
+      range: { offset: 0, length: 4096 },
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it('creates a container for a due feed image and moves it to processing', async () => {
     vi.mocked(getDueMediaPosts).mockResolvedValueOnce([makePost()] as any);
     const client = makeClient();

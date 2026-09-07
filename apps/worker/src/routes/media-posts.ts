@@ -147,16 +147,20 @@ export function validateReelCoverInput(
 export async function validateReelCoverAvailability(
   postType: MediaPostType,
   coverUrl: string | null | undefined,
+  images?: R2Bucket,
 ): Promise<string | null> {
   if (postType !== 'reel' || !coverUrl) return null;
   try {
-    await assertReelCoverFetchable(coverUrl);
+    await assertReelCoverFetchable(coverUrl, fetch, images);
     return null;
   } catch (err) {
     const message = String(err instanceof Error ? err.message : err);
     const status = message.match(/public URL returned HTTP (\d+)/i)?.[1];
     if (status === '404') {
       return '表紙画像が見つかりません（HTTP 404）。表紙画像をもう一度アップロードしてから保存してください。';
+    }
+    if (/stored image not found/i.test(message)) {
+      return '表紙画像が保存先に見つかりません。表紙画像をもう一度アップロードしてから保存してください。';
     }
     if (/expected image\/jpeg|not a valid JPEG/i.test(message)) {
       return '表紙画像をJPEGとして確認できません。表紙画像をもう一度アップロードしてください。';
@@ -258,6 +262,7 @@ mediaPosts.post('/api/media-posts', async (c) => {
   const coverAvailabilityError = await validateReelCoverAvailability(
     body.post_type as MediaPostType,
     body.cover_url,
+    c.env.IMAGES,
   );
   if (coverAvailabilityError) {
     return c.json({ success: false, error: coverAvailabilityError }, 422);
@@ -304,7 +309,7 @@ mediaPosts.post('/api/media-posts', async (c) => {
   if (immediate) {
     const igClient = await getAccountClient(c.env, c.env.DB, account);
     c.executionCtx.waitUntil(
-      kickImmediate(c.env.DB, igClient, post.id).catch((err) =>
+      kickImmediate(c.env.DB, igClient, post.id, c.env.IMAGES).catch((err) =>
         console.error('[media-posts] kickImmediate failed:', err),
       ),
     );
@@ -382,7 +387,11 @@ mediaPosts.patch('/api/media-posts/:id', async (c) => {
   if (validationError) return c.json({ success: false, error: validationError }, 400);
   const coverValidationError = validateReelCoverInput(nextType, nextCover, nextOffset);
   if (coverValidationError) return c.json({ success: false, error: coverValidationError }, 400);
-  const coverAvailabilityError = await validateReelCoverAvailability(nextType, nextCover);
+  const coverAvailabilityError = await validateReelCoverAvailability(
+    nextType,
+    nextCover,
+    c.env.IMAGES,
+  );
   if (coverAvailabilityError) {
     return c.json({ success: false, error: coverAvailabilityError }, 422);
   }
@@ -463,6 +472,7 @@ mediaPosts.post('/api/media-posts/:id/publish-now', async (c) => {
   const coverAvailabilityError = await validateReelCoverAvailability(
     post.post_type,
     post.cover_url,
+    c.env.IMAGES,
   );
   if (coverAvailabilityError) {
     return c.json({ success: false, error: coverAvailabilityError }, 422);
@@ -475,7 +485,7 @@ mediaPosts.post('/api/media-posts/:id/publish-now', async (c) => {
   const updated = await updateMediaPost(c.env.DB, post.id, { scheduled_at: jstNow() });
   const igClient = await getAccountClient(c.env, c.env.DB, account);
   c.executionCtx.waitUntil(
-    kickImmediate(c.env.DB, igClient, post.id).catch((err) =>
+    kickImmediate(c.env.DB, igClient, post.id, c.env.IMAGES).catch((err) =>
       console.error('[media-posts] publish-now kick failed:', err),
     ),
   );
@@ -504,6 +514,7 @@ mediaPosts.post('/api/media-posts/:id/retry-cover', async (c) => {
   const coverAvailabilityError = await validateReelCoverAvailability(
     post.post_type,
     post.cover_url,
+    c.env.IMAGES,
   );
   if (coverAvailabilityError) {
     return c.json({ success: false, error: coverAvailabilityError }, 422);
@@ -524,7 +535,7 @@ mediaPosts.post('/api/media-posts/:id/retry-cover', async (c) => {
   }
   const igClient = await getAccountClient(c.env, c.env.DB, account);
   c.executionCtx.waitUntil(
-    kickImmediate(c.env.DB, igClient, post.id).catch((err) =>
+    kickImmediate(c.env.DB, igClient, post.id, c.env.IMAGES).catch((err) =>
       console.error('[media-posts] retry-cover kick failed:', err),
     ),
   );
