@@ -201,6 +201,35 @@ describe('processMediaPosts — scheduled posts', () => {
     );
   });
 
+  it('reel: reports repeated cover failures as an IG Harness asset problem, not a Meta outage', async () => {
+    const post = makePost({
+      post_type: 'reel',
+      media: JSON.stringify([{ url: 'https://example.com/reel.mp4', type: 'video' }]),
+      cover_url: 'https://example.com/missing.jpg',
+      attempt_count: 3,
+    });
+    vi.mocked(getDueMediaPosts).mockResolvedValueOnce([post] as any);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 404 })));
+    const client = makeClient();
+
+    await processMediaPosts(db, client, 'acc-1');
+
+    expect(updateMediaPost).toHaveBeenCalledWith(
+      db,
+      'post-1',
+      expect.objectContaining({
+        status: 'failed',
+        attempt_count: 4,
+        error: expect.stringContaining('サムネ画像を4回確認できなかった'),
+      }),
+    );
+    expect(updateMediaPost).not.toHaveBeenCalledWith(
+      db,
+      'post-1',
+      expect.objectContaining({ error: expect.stringContaining('Meta側の一時エラー') }),
+    );
+  });
+
   it('story batch: creates one ordered STORIES container per frame', async () => {
     const post = makePost({
       post_type: 'story',

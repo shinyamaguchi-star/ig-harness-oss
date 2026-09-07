@@ -325,6 +325,17 @@ export default function PostsPage() {
     }
   }
 
+  const retryCover = async (id: string) => {
+    if (!window.confirm('Instagramに同じ投稿を手動公開していないことを確認してください。サムネ画像を再確認して投稿を再実行しますか?')) return
+    try {
+      await mediaPostsApi.retryCover(id)
+      setNotice('サムネ画像を確認し、投稿を再実行しました。')
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '再実行に失敗しました')
+    }
+  }
+
   return (
     <div>
       <Header title="投稿" />
@@ -804,6 +815,14 @@ export default function PostsPage() {
                       <button onClick={() => void publishNow(post.id)} style={{ fontSize: 12, padding: '6px 12px', borderRadius: 8, border: '1px solid #E1306C', background: 'white', color: '#E1306C', cursor: 'pointer' }}>今すぐ公開</button>
                       <button onClick={() => void cancel(post.id)} style={{ fontSize: 12, padding: '6px 12px', borderRadius: 8, border: '1px solid #D1D5DB', background: 'white', color: '#6B7280', cursor: 'pointer' }}>キャンセル</button>
                     </div>
+                  )}
+                  {post.status === 'failed' && /reel cover preflight failed/i.test(post.error ?? '') && (
+                    <button
+                      onClick={() => void retryCover(post.id)}
+                      style={{ fontSize: 12, padding: '6px 12px', borderRadius: 8, border: '1px solid #E1306C', background: 'white', color: '#E1306C', cursor: 'pointer', flexShrink: 0 }}
+                    >
+                      サムネを確認して再実行
+                    </button>
                   )}
                 </div>
               )

@@ -607,6 +607,13 @@ export const mediaPostsApi = {
     if (!res.data) throw new Error(res.error || '公開に失敗しました')
     return res.data
   },
+  retryCover: async (id: string): Promise<MediaPostApi> => {
+    const res = await fetchApi<ApiResponse<MediaPostApi>>(`/api/media-posts/${id}/retry-cover`, {
+      method: 'POST',
+    })
+    if (!res.data) throw new Error(res.error || 'サムネ確認後の再実行に失敗しました')
+    return res.data
+  },
   publishingLimit: async (): Promise<{ quotaUsage: number; quotaTotal: number }> => {
     const res = await fetchApi<ApiResponse<{ quotaUsage: number; quotaTotal: number }>>(
       '/api/media-posts/publishing-limit',

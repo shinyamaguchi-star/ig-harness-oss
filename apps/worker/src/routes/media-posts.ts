@@ -6,6 +6,7 @@ import {
   cancelMediaPost,
   updateMediaPost,
   updateScheduledMediaPost,
+  retryFailedCoverMediaPost,
   jstNow,
   toJstString,
   getIgAccountById,
@@ -17,7 +18,7 @@ import {
   type MediaPostType,
 } from '@ig-harness/db';
 import { resolveAccount, getAccountClient } from '../lib/accounts.js';
-import { kickImmediate } from '../services/media-publish.js';
+import { assertReelCoverFetchable, kickImmediate } from '../services/media-publish.js';
 import type { Env } from '../index.js';
 
 const POST_TYPES: MediaPostType[] = ['feed_image', 'carousel', 'reel', 'story'];
@@ -140,6 +141,30 @@ export function validateReelCoverInput(
   return null;
 }
 
+/** Confirm that the exact custom Reel cover URL can be fetched as a JPEG.
+ * This runs before a reservation is stored and again before a manual retry,
+ * so a broken R2/public URL cannot sit unnoticed until publication time. */
+export async function validateReelCoverAvailability(
+  postType: MediaPostType,
+  coverUrl: string | null | undefined,
+): Promise<string | null> {
+  if (postType !== 'reel' || !coverUrl) return null;
+  try {
+    await assertReelCoverFetchable(coverUrl);
+    return null;
+  } catch (err) {
+    const message = String(err instanceof Error ? err.message : err);
+    const status = message.match(/public URL returned HTTP (\d+)/i)?.[1];
+    if (status === '404') {
+      return '表紙画像が見つかりません（HTTP 404）。表紙画像をもう一度アップロードしてから保存してください。';
+    }
+    if (/expected image\/jpeg|not a valid JPEG/i.test(message)) {
+      return '表紙画像をJPEGとして確認できません。表紙画像をもう一度アップロードしてください。';
+    }
+    return `表紙画像の公開URLを確認できません${status ? `（HTTP ${status}）` : ''}。少し待ってから再試行するか、画像をもう一度アップロードしてください。`;
+  }
+}
+
 /**
  * Normalize a client-supplied scheduled_at to a JST (+09:00) string.
  * Offset-less strings (e.g. "2026-07-24T09:00" from datetime-local) are
@@ -230,6 +255,13 @@ mediaPosts.post('/api/media-posts', async (c) => {
     body.thumb_offset_ms,
   );
   if (coverValidationError) return c.json({ success: false, error: coverValidationError }, 400);
+  const coverAvailabilityError = await validateReelCoverAvailability(
+    body.post_type as MediaPostType,
+    body.cover_url,
+  );
+  if (coverAvailabilityError) {
+    return c.json({ success: false, error: coverAvailabilityError }, 422);
+  }
   let normalizedScheduledAt: string | null = null;
   if (body.scheduled_at) {
     normalizedScheduledAt = normalizeScheduledAt(body.scheduled_at);
@@ -350,6 +382,10 @@ mediaPosts.patch('/api/media-posts/:id', async (c) => {
   if (validationError) return c.json({ success: false, error: validationError }, 400);
   const coverValidationError = validateReelCoverInput(nextType, nextCover, nextOffset);
   if (coverValidationError) return c.json({ success: false, error: coverValidationError }, 400);
+  const coverAvailabilityError = await validateReelCoverAvailability(nextType, nextCover);
+  if (coverAvailabilityError) {
+    return c.json({ success: false, error: coverAvailabilityError }, 422);
+  }
 
   let nextScheduledAt = post.scheduled_at;
   if (body.scheduled_at !== undefined) {
@@ -424,6 +460,13 @@ mediaPosts.post('/api/media-posts/:id/publish-now', async (c) => {
       409,
     );
   }
+  const coverAvailabilityError = await validateReelCoverAvailability(
+    post.post_type,
+    post.cover_url,
+  );
+  if (coverAvailabilityError) {
+    return c.json({ success: false, error: coverAvailabilityError }, 422);
+  }
   // The post's owning account must do the publishing — a client built from
   // ?account_id/default could publish this post's media through another
   // account's token when the ids diverge (see broadcasts.ts's /:id/send).
@@ -434,6 +477,55 @@ mediaPosts.post('/api/media-posts/:id/publish-now', async (c) => {
   c.executionCtx.waitUntil(
     kickImmediate(c.env.DB, igClient, post.id).catch((err) =>
       console.error('[media-posts] publish-now kick failed:', err),
+    ),
+  );
+  return c.json({ success: true, data: updated ? serializeMediaPost(updated) : null });
+});
+
+/** Safely retry a Reel that failed before a Meta container was created due
+ * to an unavailable custom cover. Other failed states may already have been
+ * accepted by Meta and are intentionally not retried here. */
+mediaPosts.post('/api/media-posts/:id/retry-cover', async (c) => {
+  const post = await getMediaPostById(c.env.DB, c.req.param('id'));
+  if (!post) return c.json({ success: false, error: 'not found' }, 404);
+  const isSafeCoverFailure =
+    post.status === 'failed'
+    && post.post_type === 'reel'
+    && Boolean(post.cover_url)
+    && !post.creation_id
+    && !post.published_media_id
+    && /reel cover preflight failed/i.test(post.error ?? '');
+  if (!isSafeCoverFailure) {
+    return c.json(
+      { success: false, error: 'この投稿はサムネ取得失敗からの安全な再実行対象ではありません' },
+      409,
+    );
+  }
+  const coverAvailabilityError = await validateReelCoverAvailability(
+    post.post_type,
+    post.cover_url,
+  );
+  if (coverAvailabilityError) {
+    return c.json({ success: false, error: coverAvailabilityError }, 422);
+  }
+  const account = await getIgAccountById(c.env.DB, post.account_id);
+  if (!account) return c.json({ success: false, error: 'account not found' }, 404);
+  const updated = await retryFailedCoverMediaPost(
+    c.env.DB,
+    post.id,
+    post.account_id,
+    jstNow(),
+  );
+  if (!updated) {
+    return c.json(
+      { success: false, error: '別の処理が先に開始されました。画面を更新して状態を確認してください' },
+      409,
+    );
+  }
+  const igClient = await getAccountClient(c.env, c.env.DB, account);
+  c.executionCtx.waitUntil(
+    kickImmediate(c.env.DB, igClient, post.id).catch((err) =>
+      console.error('[media-posts] retry-cover kick failed:', err),
     ),
   );
   return c.json({ success: true, data: updated ? serializeMediaPost(updated) : null });

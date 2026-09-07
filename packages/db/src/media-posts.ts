@@ -230,6 +230,38 @@ export async function updateMediaPost(
   return getMediaPostById(db, id);
 }
 
+/** Atomically reset only a Reel that failed before Meta was called because
+ * its custom cover URL was unavailable. The status predicate prevents two
+ * retry clicks from starting two publication attempts. */
+export async function retryFailedCoverMediaPost(
+  db: D1Database,
+  id: string,
+  accountId: string,
+  scheduledAt: string,
+): Promise<MediaPost | null> {
+  const result = await db
+    .prepare(
+      `UPDATE media_posts
+       SET status = 'scheduled', scheduled_at = ?, creation_id = NULL,
+           child_creation_ids = NULL, published_media_id = NULL,
+           attempt_count = 0, last_attempt_at = NULL, next_retry_at = NULL,
+           error = NULL,
+           campaign_activation_status = CASE
+             WHEN campaign_gate_id IS NOT NULL THEN 'pending'
+             ELSE NULL
+           END,
+           campaign_error = NULL, updated_at = ?
+       WHERE id = ? AND account_id = ? AND status = 'failed'
+         AND post_type = 'reel' AND cover_url IS NOT NULL
+         AND creation_id IS NULL AND published_media_id IS NULL
+         AND error LIKE '%reel cover preflight failed%'`,
+    )
+    .bind(scheduledAt, jstNow(), id, accountId)
+    .run();
+  if ((result.meta.changes ?? 0) !== 1) return null;
+  return getMediaPostById(db, id);
+}
+
 /** Edit user-controlled reservation fields only while the row is still
  * scheduled. The status predicate prevents a cron that has just claimed the
  * post from racing with an operator edit. */

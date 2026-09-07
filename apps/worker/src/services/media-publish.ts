@@ -349,9 +349,14 @@ async function recordFailure(db: D1Database, post: MediaPost, err: unknown): Pro
   const kind = classifyPublishError(err);
   const terminal = kind === 'token' || kind === 'permission' || attempts >= MAX_ATTEMPTS;
   const described = describeError(err);
+  const rawError = String(err instanceof Error ? err.message : err);
   const message = terminal && kind === 'transient'
-    ? `Meta側の一時エラーが${attempts}回続いたため自動再試行を停止しました。内容を確認してから再実行してください。 (${String(err instanceof Error ? err.message : err)})`
-    : described;
+    ? `Meta側の一時エラーが${attempts}回続いたため自動再試行を停止しました。内容を確認してから再実行してください。 (${rawError})`
+    : terminal && kind === 'cover'
+      ? `サムネ画像を${attempts}回確認できなかったため自動再試行を停止しました。画像を再アップロードするか、現在のURLを確認してから再実行してください。 (${rawError})`
+      : kind === 'cover'
+        ? `サムネ画像を公開URLから取得できません。自動再試行します。 (${rawError})`
+        : described;
   const attemptedAt = jstNow();
   if (terminal) {
     await updateMediaPost(db, post.id, {
@@ -374,13 +379,16 @@ async function recordFailure(db: D1Database, post: MediaPost, err: unknown): Pro
   }
 }
 
-type PublishErrorKind = 'transient' | 'token' | 'permission' | 'other';
+type PublishErrorKind = 'transient' | 'cover' | 'token' | 'permission' | 'other';
 
 function classifyPublishError(err: unknown): PublishErrorKind {
   const message = String(err instanceof Error ? err.message : err);
   const code = message.match(/"code"\s*:\s*(\d+)/i)?.[1]
     ?? message.match(/(?:Meta\s+)?code[=: ]+(\d+)/i)?.[1]
     ?? null;
+  // This is an IG Harness/Cloudflare asset error detected before Meta is
+  // called. Keep it separate so operators are not told that Meta is down.
+  if (/reel cover preflight failed/i.test(message)) return 'cover';
   if (code === '190') return 'token';
   if (code === '10' || code === '200' || /\(#10\)|permission|not authorized/i.test(message)) {
     return 'permission';
@@ -389,7 +397,6 @@ function classifyPublishError(err: unknown): PublishErrorKind {
     code === '2'
     || /"is_transient"\s*:\s*true/i.test(message)
     || /Instagram API error 5\d\d/i.test(message)
-    || /reel cover preflight failed/i.test(message)
   ) {
     return 'transient';
   }
@@ -399,6 +406,9 @@ function classifyPublishError(err: unknown): PublishErrorKind {
 function describeError(err: unknown): string {
   const message = String(err instanceof Error ? err.message : err);
   const kind = classifyPublishError(err);
+  if (kind === 'cover') {
+    return `サムネ画像を公開URLから取得できません。画像を再アップロードしてから再実行してください。 (${message})`;
+  }
   if (kind === 'transient') {
     return `Meta側の一時エラーです。自動再試行します。 (${message})`;
   }

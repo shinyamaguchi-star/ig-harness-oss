@@ -13,6 +13,7 @@ const dbMocks = vi.hoisted(() => ({
   getMediaPostById: vi.fn(),
   updateMediaPost: vi.fn(),
   updateScheduledMediaPost: vi.fn(),
+  retryFailedCoverMediaPost: vi.fn(),
   cancelMediaPost: vi.fn(),
   createMediaPost: vi.fn(),
   listMediaPosts: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock('../../lib/accounts.js', () => accountsMocks);
 
 const mediaPublishMocks = vi.hoisted(() => ({
   kickImmediate: vi.fn().mockResolvedValue(undefined),
+  assertReelCoverFetchable: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../services/media-publish.js', () => mediaPublishMocks);
@@ -172,6 +174,106 @@ describe('POST /api/media-posts/:id/publish-now owning-account (Fix 1)', () => {
 
     expect(res.status).toBe(409);
     expect(dbMocks.getIgAccountById).not.toHaveBeenCalled();
+  });
+});
+
+describe('Reel cover availability and safe retry', () => {
+  const FAILED_COVER_POST = {
+    ...POST_OWNED_BY_B,
+    post_type: 'reel',
+    media: JSON.stringify([{ url: 'https://example.com/reel.mp4', type: 'video' }]),
+    cover_url: 'https://worker.example.com/images/missing.jpg',
+    status: 'failed',
+    attempt_count: 4,
+    error: 'サムネ画像を確認できません (reel cover preflight failed: public URL returned HTTP 404)',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mediaPublishMocks.assertReelCoverFetchable.mockResolvedValue(undefined);
+    dbMocks.getMediaPostById.mockResolvedValue(FAILED_COVER_POST);
+    dbMocks.getIgAccountById.mockResolvedValue(ACCOUNT_B);
+    dbMocks.retryFailedCoverMediaPost.mockImplementation(
+      async (_db: unknown, _id: string, patch: Record<string, unknown>) => ({
+        ...FAILED_COVER_POST,
+        status: 'scheduled',
+        attempt_count: 0,
+        error: null,
+      }),
+    );
+    accountsMocks.getAccountClient.mockResolvedValue({ fake: 'client' });
+  });
+
+  it('rejects a new reservation before saving when the cover URL returns 404', async () => {
+    accountsMocks.resolveAccount.mockResolvedValue(ACCOUNT_B);
+    mediaPublishMocks.assertReelCoverFetchable.mockRejectedValueOnce(
+      new Error('reel cover preflight failed: public URL returned HTTP 404'),
+    );
+
+    const res = await mediaPosts.fetch(
+      new Request('https://worker.example.com/api/media-posts?account_id=account-B', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          post_type: 'reel',
+          media: [{ url: 'https://example.com/reel.mp4', type: 'video' }],
+          cover_url: 'https://worker.example.com/images/missing.jpg',
+          scheduled_at: '2026-01-02T18:00:00+09:00',
+        }),
+      }),
+      makeEnv(),
+      executionCtx,
+    );
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({
+      success: false,
+      error: expect.stringContaining('HTTP 404'),
+    });
+    expect(dbMocks.createMediaPost).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the URL and safely resets a preflight failure before retrying', async () => {
+    const res = await mediaPosts.fetch(
+      new Request('https://worker.example.com/api/media-posts/post-1/retry-cover', {
+        method: 'POST',
+      }),
+      makeEnv(),
+      executionCtx,
+    );
+
+    expect(res.status).toBe(200);
+    expect(mediaPublishMocks.assertReelCoverFetchable).toHaveBeenCalledWith(
+      FAILED_COVER_POST.cover_url,
+    );
+    expect(dbMocks.retryFailedCoverMediaPost).toHaveBeenCalledWith(
+      expect.anything(),
+      'post-1',
+      'account-B',
+      '2026-01-01T00:00:00+09:00',
+    );
+    expect(mediaPublishMocks.kickImmediate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'post-1',
+    );
+  });
+
+  it('does not reset a failed post when its cover is still unavailable', async () => {
+    mediaPublishMocks.assertReelCoverFetchable.mockRejectedValueOnce(
+      new Error('reel cover preflight failed: public URL returned HTTP 404'),
+    );
+    const res = await mediaPosts.fetch(
+      new Request('https://worker.example.com/api/media-posts/post-1/retry-cover', {
+        method: 'POST',
+      }),
+      makeEnv(),
+      executionCtx,
+    );
+
+    expect(res.status).toBe(422);
+    expect(dbMocks.retryFailedCoverMediaPost).not.toHaveBeenCalled();
+    expect(mediaPublishMocks.kickImmediate).not.toHaveBeenCalled();
   });
 });
 
