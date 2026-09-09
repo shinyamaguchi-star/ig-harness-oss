@@ -299,6 +299,12 @@ CREATE INDEX IF NOT EXISTS idx_gate_deliveries_gate ON gate_deliveries(gate_id);
 CREATE INDEX IF NOT EXISTS idx_gate_deliveries_follower ON gate_deliveries(follower_id);
 CREATE INDEX IF NOT EXISTS idx_gate_deliveries_igsid ON gate_deliveries(igsid);
 CREATE INDEX IF NOT EXISTS idx_gate_deliveries_status ON gate_deliveries(status);
+-- Cron checks due follow-up DMs every minute. Keep NULL schedules out of the
+-- index so accounts with thousands of completed deliveries do not spend their
+-- daily D1 read allowance scanning rows that can never be due.
+CREATE INDEX IF NOT EXISTS idx_gate_deliveries_followup_due
+  ON gate_deliveries(status, next_followup_at, gate_id)
+  WHERE next_followup_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_gate_deliveries_gate_follower_post
   ON gate_deliveries(gate_id, follower_id, trigger_post_id);
 

@@ -57,6 +57,70 @@ export type Env = {
 
 const app = new Hono<Env>();
 
+export type PublicWorkerError = {
+  status: 500 | 503;
+  message: string;
+};
+
+function collectErrorMessages(error: unknown): string {
+  const messages: string[] = [];
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    if (current instanceof Error) {
+      messages.push(current.message);
+      current = current.cause;
+    } else {
+      messages.push(String(current));
+      break;
+    }
+  }
+  return messages.join(' | ');
+}
+
+/** Convert infrastructure failures into an operator-safe, actionable message.
+ * The full exception remains in Worker logs; credentials are never returned. */
+export function classifyUnhandledWorkerError(error: unknown): PublicWorkerError {
+  const detail = collectErrorMessages(error);
+  if (/exceeded D1(?:'s)? free tier daily row read limit/i.test(detail)) {
+    return {
+      status: 503,
+      message:
+        'Cloudflare D1の1日あたりの読取上限に達しました。予約内容は保存されていません。日本時間9:00の上限リセット後に再試行するか、Cloudflare Workers Paidへの変更が必要です。',
+    };
+  }
+  if (/exceeded D1(?:'s)? free tier daily row write limit/i.test(detail)) {
+    return {
+      status: 503,
+      message:
+        'Cloudflare D1の1日あたりの書込上限に達しました。予約内容は保存されていません。日本時間9:00の上限リセット後に再試行するか、Cloudflare Workers Paidへの変更が必要です。',
+    };
+  }
+  if (
+    /Network connection lost|storage caused object to be reset|Cannot resolve D1 DB due to transient issue|D1 DB storage operation exceeded timeout|D1 DB is overloaded/i.test(
+      detail,
+    )
+  ) {
+    return {
+      status: 503,
+      message:
+        'Cloudflare D1で一時的な接続エラーが発生しました。予約内容は保存されていません。少し待ってから一度だけ再試行してください。',
+    };
+  }
+  return {
+    status: 500,
+    message:
+      'サーバー内部で予期しないエラーが発生しました。予約内容は保存されていません。時間を空けて再試行しても続く場合は、発生時刻を管理者へお知らせください。',
+  };
+}
+
+app.onError((error, c) => {
+  console.error('[worker] unhandled request error:', error);
+  const publicError = classifyUnhandledWorkerError(error);
+  return c.json({ success: false, error: publicError.message }, publicError.status);
+});
+
 // CORS — allow all origins for MVP
 app.use('*', cors({ origin: '*' }));
 
