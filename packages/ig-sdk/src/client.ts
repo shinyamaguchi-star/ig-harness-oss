@@ -152,6 +152,40 @@ export class InstagramClient {
     }));
   }
 
+  /** Fetch one canonical comment for a controlled historical backfill. */
+  async getComment(commentId: string): Promise<{
+    id: string;
+    text: string;
+    username: string;
+    from_id: string;
+    timestamp: string;
+    media_id: string;
+  }> {
+    const data = await this.request<{
+      id: string;
+      text?: string;
+      username?: string;
+      from?: { id?: string; username?: string };
+      user?: { id?: string; username?: string };
+      timestamp?: string;
+      media?: { id?: string };
+    }>(
+      'GET',
+      `/${encodeURIComponent(commentId)}?fields=id,text,username,from{id,username},user{id,username},timestamp,media{id}`,
+    );
+    return {
+      id: data.id,
+      text: data.text ?? '',
+      username: data.from?.username ?? data.user?.username ?? data.username ?? '',
+      // The media comments edge currently exposes from.id, while an
+      // individual comment lookup exposes the same scoped author id as
+      // user.id. Accept both shapes so canonical replay validation works.
+      from_id: data.from?.id ?? data.user?.id ?? '',
+      timestamp: data.timestamp ?? '',
+      media_id: data.media?.id ?? '',
+    };
+  }
+
   async replyToComment(commentId: string, message: string): Promise<{ id: string }> {
     // IG Graph API requires query-parameter encoding for /replies, not JSON body.
     // Sending JSON returns "Object does not exist" because the API can't parse

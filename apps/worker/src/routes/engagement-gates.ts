@@ -17,10 +17,12 @@ import {
   replaceScheduledCampaignMediaPosts,
   attachCampaignToMediaPost,
   parseGateTriggerKeywords,
+  upsertFriend,
   type EngagementGate,
 } from '@ig-harness/db';
-import { resolveAccount } from '../lib/accounts.js';
+import { getAccountClient, resolveAccount, toIgAccountRef } from '../lib/accounts.js';
 import { copyEngagementGate } from '../services/campaign-copy.js';
+import { triggerGateForComment } from '../services/engagement-gate.js';
 
 const engagementGates = new Hono<Env>();
 
@@ -645,6 +647,106 @@ engagementGates.get('/api/engagement-gates/:id/deliveries', async (c) => {
   const id = c.req.param('id');
   const deliveries = await listGateDeliveries(c.env.DB, id);
   return c.json({ success: true, data: deliveries });
+});
+
+/**
+ * Replay one historical Instagram comment through one explicitly selected
+ * campaign. This is intentionally one-comment-per-request so an operator can
+ * pace a backfill, stop safely, and resume without duplicating successful DMs.
+ */
+engagementGates.post('/api/engagement-gates/:id/backfill-comment', async (c) => {
+  const gateId = c.req.param('id');
+  const account = await resolveAccount(c);
+  if (!account) return c.json({ success: false, error: 'account not found' }, 404);
+
+  const gate = await getEngagementGate(c.env.DB, gateId);
+  if (!gate || gate.account_id !== account.id) {
+    return c.json({ success: false, error: 'campaign not found for this account' }, 404);
+  }
+  if (gate.status !== 'active' || gate.trigger_type !== 'comment_on_post') {
+    return c.json({ success: false, error: 'campaign must be an active comment campaign' }, 409);
+  }
+
+  const body = await c.req.json<{
+    post_id?: string;
+    comment_id?: string;
+    include_thread_reply?: boolean;
+  }>();
+  if (!body.post_id || !body.comment_id) {
+    return c.json({ success: false, error: 'post_id and comment_id required' }, 400);
+  }
+  const targets = gate.target_post_ids?.length
+    ? gate.target_post_ids
+    : gate.target_post_id
+      ? [gate.target_post_id]
+      : [];
+  if (targets.length > 0 && !targets.includes(body.post_id)) {
+    return c.json({ success: false, error: 'post is not targeted by this campaign' }, 409);
+  }
+
+  const igClient = await getAccountClient(c.env, c.env.DB, account);
+  // The individual-comment endpoint inconsistently omits the scoped author
+  // id for some Instagram Login tokens. The media comments edge supplies it,
+  // so validate the requested comment against that canonical list instead.
+  const comment = (await igClient.getMediaComments(body.post_id, 100)).find(
+    (candidate) => candidate.id === body.comment_id,
+  );
+  if (!comment) {
+    return c.json({ success: false, error: 'comment was not found on the selected post' }, 404);
+  }
+  if (!comment.from_id || comment.from_id === account.ig_user_id) {
+    return c.json({ success: false, error: 'comment has no eligible external author' }, 409);
+  }
+  const createdAt = Date.parse(comment.timestamp);
+  if (!Number.isFinite(createdAt) || Date.now() - createdAt > 7 * 24 * 60 * 60 * 1000) {
+    return c.json({ success: false, error: 'comment is outside the 7-day reply window' }, 409);
+  }
+
+  const follower = await upsertFriend(c.env.DB, {
+    igsid: comment.from_id,
+    username: comment.username || null,
+    accountId: account.id,
+  });
+  const before = (await listGateDeliveries(c.env.DB, gateId)).find(
+    (d) => d.follower_id === follower.id && d.trigger_post_id === body.post_id,
+  );
+  if (before && before.status !== 'triggered') {
+    return c.json({
+      success: true,
+      data: { sent: false, duplicate: true, status: before.status, threaded_reply: 'skipped' },
+    });
+  }
+
+  let replyError: unknown;
+  const fired = await triggerGateForComment(c.env.DB, igClient, {
+    postId: body.post_id,
+    commentText: comment.text,
+    follower: { id: follower.id, igsid: comment.from_id },
+    commentId: body.include_thread_reply === false ? undefined : comment.id,
+    commenterUsername: comment.username,
+    workerBaseUrl: c.env.WORKER_URL,
+    igAccount: toIgAccountRef(account),
+    accountId: account.id,
+    gateId,
+    onCommentReplyResult: (error) => { replyError = error; },
+  });
+  if (!fired) {
+    return c.json({ success: false, error: 'comment did not match the selected campaign' }, 409);
+  }
+  const after = (await listGateDeliveries(c.env.DB, gateId)).find(
+    (d) => d.follower_id === follower.id && d.trigger_post_id === body.post_id,
+  );
+  return c.json({
+    success: true,
+    data: {
+      sent: !before,
+      duplicate: false,
+      status: after?.status ?? 'unknown',
+      threaded_reply:
+        body.include_thread_reply === false ? 'skipped' : replyError ? 'failed' : 'sent',
+      threaded_reply_error: replyError ? String(replyError) : null,
+    },
+  });
 });
 
 export { engagementGates };

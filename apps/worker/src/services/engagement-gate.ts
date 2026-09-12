@@ -86,6 +86,10 @@ export async function triggerGateForComment(
     igAccount?: IgAccountRef;
     /** Owning account row id (ig_accounts.id) — scopes gate matching. */
     accountId?: string;
+    /** Restrict a controlled replay/backfill to one explicitly selected gate. */
+    gateId?: string;
+    /** Optional observer used by operator backfills to report threaded-reply failures. */
+    onCommentReplyResult?: (error?: unknown) => void;
   },
 ): Promise<boolean> {
   const all = await listEngagementGates(db, { activeOnly: true, accountId: args.accountId });
@@ -99,6 +103,7 @@ export async function triggerGateForComment(
   interface Scored { gate: typeof all[number]; score: number }
   const candidates: Scored[] = [];
   for (const gate of all) {
+    if (args.gateId && gate.id !== args.gateId) continue;
     if (gate.trigger_type !== 'comment_on_post') continue;
     // Junction array is source of truth; fall back to legacy column.
     const targets =
@@ -168,14 +173,17 @@ export async function triggerGateForComment(
         const replyText = formatThreadReplyText(picked, args.commenterUsername);
         if (!args.commentId) {
           console.warn('[gate] threaded comment reply skipped: missing comment id');
+          args.onCommentReplyResult?.(new Error('missing comment id'));
         } else if (replyText) {
           try {
             await igClient.replyToComment(args.commentId, replyText);
+            args.onCommentReplyResult?.();
           } catch (err) {
             // Deliberately do not fall back to a top-level @mention comment:
             // the operator selected threaded replies and requested that the
             // old top-level behavior never be used.
             console.error('[gate] threaded comment reply failed:', err);
+            args.onCommentReplyResult?.(err);
           }
         }
       }
