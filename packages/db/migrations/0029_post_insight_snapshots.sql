@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS post_insight_snapshots (
   account_id TEXT NOT NULL,
   media_post_id TEXT NOT NULL,
   instagram_media_id TEXT NOT NULL,
-  checkpoint_hours INTEGER NOT NULL CHECK (checkpoint_hours IN (24,48,72,96,120,144,168)),
+  checkpoint_hours INTEGER NOT NULL CHECK (checkpoint_hours IN (24,168)),
   target_at TEXT NOT NULL,
   captured_at TEXT NOT NULL,
   views INTEGER,

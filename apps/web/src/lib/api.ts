@@ -644,7 +644,7 @@ export interface PostInsightSnapshotApi {
   postCaption: string | null
   postType: MediaPostType
   publishedAt: string
-  checkpointHours: 24 | 48 | 72 | 96 | 120 | 144 | 168
+  checkpointHours: 24 | 168
   targetAt: string
   capturedAt: string
   views: number | null

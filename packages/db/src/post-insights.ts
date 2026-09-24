@@ -1,6 +1,6 @@
 import { jstNow, toJstString } from './utils.js';
 
-export const INSIGHT_CHECKPOINT_HOURS = [24, 48, 72, 96, 120, 144, 168] as const;
+export const INSIGHT_CHECKPOINT_HOURS = [24, 168] as const;
 export type InsightCheckpointHours = (typeof INSIGHT_CHECKPOINT_HOURS)[number];
 
 export interface DuePostInsightCheckpoint {
@@ -61,7 +61,7 @@ export async function getDuePostInsightCheckpoints(
   const result = await db
     .prepare(
       `WITH checkpoints(hours) AS (
-         VALUES (24), (48), (72), (96), (120), (144), (168)
+         VALUES (24), (168)
        ), missing AS (
          SELECT p.id AS media_post_id,
                 p.account_id,

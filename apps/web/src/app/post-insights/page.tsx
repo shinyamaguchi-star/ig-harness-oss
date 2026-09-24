@@ -70,7 +70,7 @@ export default function PostInsightsPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">投稿分析</h1>
         <p className="mt-1 text-sm text-gray-500">
-          機能追加後にIG Harnessから公開した投稿を、24時間ごとに7日間自動計測します。
+          機能追加後にIG Harnessから公開した投稿を、24時間後と7日後に自動計測します。
         </p>
       </div>
 
@@ -102,7 +102,7 @@ export default function PostInsightsPage() {
                 </div>
                 <p className="mt-1 text-xs text-gray-500">公開：{formatDate(first.publishedAt)}</p>
               </div>
-              <span className="text-xs text-gray-500">{items.length}/7回取得済み</span>
+              <span className="text-xs text-gray-500">{items.length}/2回取得済み</span>
             </div>
 
             <div className="overflow-x-auto">
