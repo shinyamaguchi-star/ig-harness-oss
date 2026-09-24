@@ -174,6 +174,16 @@ export interface MediaInfo {
   permalink: string;
 }
 
+// ── Media Insights ──
+export interface MediaInsightResult {
+  name: string;
+  period?: string;
+  title?: string;
+  description?: string;
+  total_value?: { value?: unknown };
+  values?: Array<{ value?: unknown; end_time?: string }>;
+}
+
 // ── Rich Message Blocks ──
 // Reusable structured DM templates that expand to one-or-more IG Messenger
 // API calls at send time.

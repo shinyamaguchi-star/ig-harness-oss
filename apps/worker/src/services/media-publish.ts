@@ -243,6 +243,7 @@ async function advancePost(
       const published = await updateMediaPost(db, post.id, {
         status: 'published',
         published_media_id: result.id,
+        published_at: jstNow(),
         last_attempt_at: jstNow(),
         next_retry_at: null,
         error: null,
@@ -254,6 +255,7 @@ async function advancePost(
       // to published state without re-publishing.
       await updateMediaPost(db, post.id, {
         status: 'published',
+        published_at: post.published_at ?? jstNow(),
         next_retry_at: null,
         error: 'recovered: container already PUBLISHED; media id unrecorded',
       });
@@ -326,6 +328,7 @@ async function advanceStoryPost(
     await updateMediaPost(db, post.id, {
       status: 'published',
       published_media_id: lastPublishedMediaId,
+      published_at: jstNow(),
       last_attempt_at: jstNow(),
       next_retry_at: null,
       error: null,

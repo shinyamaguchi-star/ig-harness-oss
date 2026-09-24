@@ -28,6 +28,8 @@ export interface MediaPost {
   /** JSON-encoded string[] of carousel children or ordered Story containers. */
   child_creation_ids: string | null;
   published_media_id: string | null;
+  /** Actual time Instagram accepted the publication. */
+  published_at: string | null;
   attempt_count: number;
   /** Most recent attempt to call the Instagram publishing API. */
   last_attempt_at: string | null;
@@ -167,6 +169,7 @@ export type UpdateMediaPostInput = Partial<
     | 'creation_id'
     | 'child_creation_ids'
     | 'published_media_id'
+    | 'published_at'
     | 'attempt_count'
     | 'last_attempt_at'
     | 'next_retry_at'
@@ -197,6 +200,7 @@ export async function updateMediaPost(
     'creation_id',
     'child_creation_ids',
     'published_media_id',
+    'published_at',
     'attempt_count',
     'last_attempt_at',
     'next_retry_at',

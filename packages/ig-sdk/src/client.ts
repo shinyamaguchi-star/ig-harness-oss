@@ -14,6 +14,7 @@ import type {
   ContainerStatus,
   PublishingLimit,
   InstagramConversationPage,
+  MediaInsightResult,
 } from "./types.js";
 
 const GRAPH_API_BASE = "https://graph.instagram.com/v21.0";
@@ -227,6 +228,33 @@ export class InstagramClient {
     return this.request(
       "GET",
       `/${mediaId}?fields=id,caption,media_type,media_product_type,media_url,thumbnail_url,timestamp,permalink`,
+    );
+  }
+
+  /** Fetch cumulative insights for one owned media object. Metric support is
+   * media-type dependent, so callers should request an appropriate set and
+   * handle unsupported metrics explicitly. */
+  async getMediaInsights(
+    mediaId: string,
+    metrics: string[],
+  ): Promise<MediaInsightResult[]> {
+    if (metrics.length === 0) return [];
+    const query = new URLSearchParams({ metric: metrics.join(',') });
+    const response = await this.request<{ data?: MediaInsightResult[] }>(
+      'GET',
+      `/${encodeURIComponent(mediaId)}/insights?${query.toString()}`,
+    );
+    return response.data ?? [];
+  }
+
+  /** likes/comments are media fields as well as insight metrics on some API
+   * versions. This provides a stable fallback without fabricating zeros. */
+  async getMediaEngagementCounts(
+    mediaId: string,
+  ): Promise<{ like_count?: number; comments_count?: number }> {
+    return this.request(
+      'GET',
+      `/${encodeURIComponent(mediaId)}?fields=like_count,comments_count`,
     );
   }
 

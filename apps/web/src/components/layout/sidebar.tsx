@@ -43,6 +43,11 @@ const menuItems = [
     icon: 'M12 4v16m8-8H4',
   },
   {
+    href: '/post-insights',
+    label: '投稿分析',
+    icon: 'M3 3v18h18M7 16l4-5 3 3 5-7',
+  },
+  {
     href: '/rich-messages',
     label: 'DMテンプレート',
     icon: 'M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z',

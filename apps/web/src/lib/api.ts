@@ -522,6 +522,7 @@ export interface MediaPostApi {
   scheduledAt: string
   creationId: string | null
   publishedMediaId: string | null
+  publishedAt: string | null
   attemptCount: number
   lastAttemptAt: string | null
   nextRetryAt: string | null
@@ -630,6 +631,41 @@ export const mediaPostsApi = {
     })
     if (!res.data) throw new Error(res.error || 'アップロードに失敗しました')
     return res.data
+  },
+}
+
+// ── Post insight snapshots (+24h through +168h) ──
+
+export interface PostInsightSnapshotApi {
+  id: string
+  mediaPostId: string
+  instagramMediaId: string
+  postTitle: string | null
+  postCaption: string | null
+  postType: MediaPostType
+  publishedAt: string
+  checkpointHours: 24 | 48 | 72 | 96 | 120 | 144 | 168
+  targetAt: string
+  capturedAt: string
+  views: number | null
+  reach: number | null
+  likes: number | null
+  comments: number | null
+  saved: number | null
+  shares: number | null
+  totalInteractions: number | null
+  profileVisits: number | null
+  follows: number | null
+  avgWatchTimeMs: number | null
+  totalWatchTimeMs: number | null
+  replies: number | null
+  unavailableMetrics: string[]
+}
+
+export const postInsightsApi = {
+  list: async (): Promise<PostInsightSnapshotApi[]> => {
+    const res = await fetchApi<ApiResponse<PostInsightSnapshotApi[]>>('/api/post-insights')
+    return res.data ?? []
   },
 }
 

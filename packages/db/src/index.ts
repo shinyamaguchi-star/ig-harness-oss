@@ -12,6 +12,7 @@ export * from './rich-messages.js';
 export * from './accounts.js';
 export * from './messages-log.js';
 export * from './media-posts.js';
+export * from './post-insights.js';
 
 /**
  * Thin wrapper around D1Database.

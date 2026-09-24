@@ -26,7 +26,9 @@ import { lineConnections } from './routes/line-connections.js';
 import { accounts } from './routes/accounts.js';
 import { capabilities } from './routes/capabilities.js';
 import { mediaPosts } from './routes/media-posts.js';
+import { postInsights } from './routes/post-insights.js';
 import { processMediaPosts } from './services/media-publish.js';
+import { processPostInsightSnapshots } from './services/post-insights.js';
 import { processConversationBackfill } from './services/conversation-sync.js';
 import { ensureDefaultAccount, getAccountClient, toIgAccountRef } from './lib/accounts.js';
 import { recordCronRun, recordTokenValidity } from './lib/health.js';
@@ -151,6 +153,7 @@ app.route('/', lineConnections);
 app.route('/', accounts);
 app.route('/', capabilities);
 app.route('/', mediaPosts);
+app.route('/', postInsights);
 
 // LINE Harness UUID linkage endpoint
 app.get('/connect', (c) => {
@@ -440,6 +443,14 @@ async function scheduled(
       await processConversationBackfill(env.DB, igClient, account);
     } catch (err) {
       console.error(`[cron] processConversationBackfill failed for account=${account.id}:`, err);
+    }
+
+    // Analytics are deliberately last. A delayed snapshot can be retried,
+    // while publishing and customer-facing automatic replies are time-sensitive.
+    try {
+      await processPostInsightSnapshots(env.DB, igClient, account.id);
+    } catch (err) {
+      console.error(`[cron] processPostInsightSnapshots failed for account=${account.id}:`, err);
     }
   }
 }
