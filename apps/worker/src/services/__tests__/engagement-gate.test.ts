@@ -150,6 +150,49 @@ describe('triggerGateForComment', () => {
     expect(JSON.stringify(call[1])).toContain('CHECK_FOLLOW:gate-1:');
   });
 
+  it('marks a one-step rich message delivered without waiting for a postback', async () => {
+    const db = createMockDb();
+    db.gates.push({
+      id: 'gate-direct',
+      status: 'active',
+      trigger_type: 'comment_on_post',
+      target_post_id: 'post-direct',
+      trigger_keyword: null,
+      require_follow: 0,
+      initial_dm_rich_message_id: 'rm-1',
+      initial_dm_text: 'direct fallback',
+      initial_dm_button_label: '',
+      follow_reminder_dm_text: '',
+      follow_reminder_button_label: '',
+      reward_dm_text: '',
+      reward_url: 'https://example.com/offer',
+      max_loops: 0,
+      allow_repeat: 0,
+      created_at: '2026-01-01T00:00:00Z',
+    });
+    const client = {
+      ...fakeIgClient,
+      sendRichMessage: vi.fn(async () => ({ sentBlocks: 1 })),
+    };
+
+    await triggerGateForComment(db, client as never, {
+      postId: 'post-direct',
+      commentText: 'anything',
+      follower: { id: 77, igsid: 'IGSID77' },
+      workerBaseUrl: 'https://worker.example',
+    });
+
+    expect(client.sendRichMessage).toHaveBeenCalledTimes(1);
+    const richCall = client.sendRichMessage.mock.calls[0] as unknown as [string, unknown[], { rewardUrl?: string }];
+    expect(richCall[2]).toEqual(
+      expect.objectContaining({
+        rewardUrl: expect.stringContaining('https://worker.example/click/gate-direct'),
+      }),
+    );
+    expect(db.deliveries[0].status).toBe('delivered');
+    expect(db.deliveries[0].delivered_at).toBeTruthy();
+  });
+
   it('sends comment reply and CTA once per linked post for the same follower', async () => {
     const db = createMockDb();
     db.gates.push({

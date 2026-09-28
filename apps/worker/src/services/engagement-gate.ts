@@ -1,4 +1,4 @@
-import { listEngagementGates, createGateDelivery, updateGateDelivery, getGateDelivery, getEngagementGate, getRichMessage, parseFollowupSequence, parseGateTriggerKeywords, logMessage } from '@ig-harness/db';
+import { listEngagementGates, createGateDelivery, updateGateDelivery, getGateDelivery, getEngagementGate, getRichMessage, hasCheckFollowPostback, parseFollowupSequence, parseGateTriggerKeywords, logMessage } from '@ig-harness/db';
 import type { EngagementGate, GateDelivery } from '@ig-harness/db';
 import type { UserProfile, RichMessageBlock, RichMessageContext } from '@ig-harness/ig-sdk';
 import { resolveLineCrossLinkUrl, type IgAccountRef } from './line-cross-link.js';
@@ -155,8 +155,8 @@ export async function triggerGateForComment(
       return true;
     }
 
-    await sendCtaDm(db, igClient, gate, delivery, args.igAccount);
-    await updateGateDelivery(db, delivery.id, { status: 'cta_sent' });
+    const direct = await sendCtaDm(db, igClient, gate, delivery, args.igAccount, args.workerBaseUrl);
+    await markInitialDelivery(db, gate, delivery, direct);
 
     // Optional public reply. It is attached to the triggering comment via
     // /{comment_id}/replies so it appears inside that comment's thread,
@@ -218,8 +218,8 @@ export async function triggerGateForDmKeyword(
       return true;
     }
 
-    await sendCtaDm(db, igClient, gate, delivery, args.igAccount);
-    await updateGateDelivery(db, delivery.id, { status: 'cta_sent' });
+    const direct = await sendCtaDm(db, igClient, gate, delivery, args.igAccount);
+    await markInitialDelivery(db, gate, delivery, direct);
     return true;
   }
   return false;
@@ -248,8 +248,8 @@ export async function triggerGateForStoryMention(
       return true;
     }
 
-    await sendCtaDm(db, igClient, gate, delivery, args.igAccount);
-    await updateGateDelivery(db, delivery.id, { status: 'cta_sent' });
+    const direct = await sendCtaDm(db, igClient, gate, delivery, args.igAccount);
+    await markInitialDelivery(db, gate, delivery, direct);
     return true;
   }
   return false;
@@ -314,13 +314,17 @@ async function sendCtaDm(
   gate: EngagementGate,
   delivery: GateDelivery,
   igAccount?: IgAccountRef,
-): Promise<void> {
+  workerBaseUrl?: string,
+): Promise<boolean> {
   const payload = `CHECK_FOLLOW:${gate.id}:${delivery.id}`;
 
   if (gate.initial_dm_rich_message_id) {
     const rm = await getRichMessage(db, gate.initial_dm_rich_message_id);
     if (rm) {
-      const rewardUrl = await effectiveRewardUrl(db, gate, delivery.igsid, igAccount);
+      const rawRewardUrl = await effectiveRewardUrl(db, gate, delivery.igsid, igAccount);
+      const rewardUrl = workerBaseUrl && rawRewardUrl
+        ? wrapClickTracking(workerBaseUrl, gate.id, rawRewardUrl, delivery.igsid)
+        : rawRewardUrl;
       await igClient.sendRichMessage(delivery.igsid, rm.blocks, {
         gateId: gate.id,
         deliveryId: delivery.id,
@@ -333,7 +337,10 @@ async function sendCtaDm(
         body: JSON.stringify({ kind: 'rich', blocks: rm.blocks }),
         triggerSource: 'gate',
       });
-      return;
+      // New direct-delivery campaigns put the final URL button in the
+      // initial rich message. Legacy campaigns keep CHECK_FOLLOW and wait
+      // for its postback before sending the reward slot.
+      return gate.require_follow === 0 && !hasCheckFollowPostback(rm.blocks);
     }
     // fall through to legacy text path on missing reference
   }
@@ -354,6 +361,30 @@ async function sendCtaDm(
     body: gate.initial_dm_text,
     triggerSource: 'gate',
   });
+  return false;
+}
+
+/** Mark a direct initial template as fully delivered immediately. Legacy
+ * CTA templates remain in cta_sent until their CHECK_FOLLOW postback fires. */
+async function markInitialDelivery(
+  db: D1Database,
+  gate: EngagementGate,
+  delivery: GateDelivery,
+  direct: boolean,
+): Promise<void> {
+  if (!direct) {
+    await updateGateDelivery(db, delivery.id, { status: 'cta_sent' });
+    return;
+  }
+  const now = new Date().toISOString();
+  const patch: Parameters<typeof updateGateDelivery>[2] = {
+    status: 'delivered',
+    delivered_at: now,
+    last_check_at: now,
+  };
+  const next = nextFollowupAt(gate, 0, now);
+  if (next) patch.next_followup_at = next;
+  await updateGateDelivery(db, delivery.id, patch);
 }
 
 export async function handleFollowCheckPostback(

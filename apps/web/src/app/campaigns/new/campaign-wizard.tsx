@@ -97,6 +97,9 @@ interface WizardState {
   ctaImageUrl: string
   ctaText: string
   ctaButtonLabel: string
+  /** New one-step flow: the initial rich message contains the full copy and
+   * final URL CTA. Existing campaigns keep their legacy two-step flow. */
+  directDelivery: boolean
   /** Whether to require follow before delivering the reward */
   requireFollow: boolean
   /** DM sent when user clicks CTA and is verified as a follower */
@@ -137,7 +140,8 @@ const DEFAULTS: WizardState = {
   ctaImageUrl: '',
   ctaText: 'コメントありがとう！🎁\n下のボタンから特典を受け取ってね',
   ctaButtonLabel: '特典を受け取る',
-  requireFollow: true,
+  directDelivery: true,
+  requireFollow: false,
   rewardMode: 'new',
   rewardExistingId: '',
   rewardImageUrl: '',
@@ -457,14 +461,19 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
       if (!s.ctaExistingId) return '最初のDMに使うメッセージを選択してください'
     } else {
       if (!s.ctaText.trim() && !s.ctaImageUrl) return '最初のDMには画像またはテキストが必要です'
-      if (!s.ctaButtonLabel.trim()) return '「受け取る」ボタンのラベルを入力してください'
+      if (!s.directDelivery && !s.ctaButtonLabel.trim()) return '「受け取る」ボタンのラベルを入力してください'
     }
 
-    if (s.rewardMode === 'existing') {
-      if (!s.rewardExistingId) return '特典DMに使うメッセージを選択してください'
-    } else {
-      if (!s.rewardText.trim() && !s.rewardImageUrl) return '特典DMには画像またはテキストが必要です'
-      if (!s.rewardButtonLabel.trim()) return '特典DMのボタンラベルを入力してください'
+    if (!s.directDelivery) {
+      if (s.rewardMode === 'existing') {
+        if (!s.rewardExistingId) return '特典DMに使うメッセージを選択してください'
+      } else {
+        if (!s.rewardText.trim() && !s.rewardImageUrl) return '特典DMには画像またはテキストが必要です'
+        if (!s.rewardButtonLabel.trim()) return '特典DMのボタンラベルを入力してください'
+      }
+    } else if (s.ctaMode === 'new') {
+      if (!s.rewardText.trim() && !s.rewardImageUrl) return '最後のCTAには画像またはテキストが必要です'
+      if (!s.rewardButtonLabel.trim()) return '最後のCTAのボタンラベルを入力してください'
     }
 
     // When a LINE Harness 接続先 is selected, the reward URL is auto-built
@@ -527,12 +536,22 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
   }
 
   const buildCtaBlocks = (): RichMessageBlock[] =>
-    buildSlot(
-      s.ctaText,
-      s.ctaImageUrl || undefined,
-      [{ type: 'postback', label: s.ctaButtonLabel, payload: 'CHECK_FOLLOW:{GATE_ID}:{DELIVERY_ID}' }],
-      'お知らせ',
-    )
+    s.directDelivery
+      ? [
+          ...(s.ctaText.trim() ? [{ type: 'text' as const, text: s.ctaText.trim().slice(0, 1000) }] : []),
+          ...buildSlot(
+            s.rewardText,
+            s.rewardImageUrl || undefined,
+            [{ type: 'url', label: s.rewardButtonLabel, url: '{REWARD_URL}' }],
+            'ご案内',
+          ),
+        ]
+      : buildSlot(
+          s.ctaText,
+          s.ctaImageUrl || undefined,
+          [{ type: 'postback', label: s.ctaButtonLabel, payload: 'CHECK_FOLLOW:{GATE_ID}:{DELIVERY_ID}' }],
+          'お知らせ',
+        )
 
   const buildRewardBlocks = (): RichMessageBlock[] =>
     buildSlot(
@@ -563,7 +582,7 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
     // or POST a new one. No rollback on partial failure — orphan rich
     // messages are safer than a half-committed broken gate.
     let ctaId: string
-    let rewardId: string
+    let rewardId: string | null = null
     let reminderId: string | null = null
 
     try {
@@ -579,16 +598,18 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
         ctaId = cta.id
       }
 
-      if (s.rewardMode === 'existing') {
-        rewardId = s.rewardExistingId
-      } else {
-        setProgress('特典DMを保存中...')
-        const reward = await richMessagesApi.create({
-          name: `${s.name} / 特典`,
-          kind: 'reward',
-          blocks: buildRewardBlocks(),
-        })
-        rewardId = reward.id
+      if (!s.directDelivery) {
+        if (s.rewardMode === 'existing') {
+          rewardId = s.rewardExistingId
+        } else {
+          setProgress('特典DMを保存中...')
+          const reward = await richMessagesApi.create({
+            name: `${s.name} / 特典`,
+            kind: 'reward',
+            blocks: buildRewardBlocks(),
+          })
+          rewardId = reward.id
+        }
       }
 
       if (s.requireFollow) {
@@ -649,7 +670,7 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
           s.triggerType === 'comment_on_post'
             ? normalizedCommentKeywords(s.commentKeywords)
             : undefined,
-        require_follow: s.requireFollow ? 1 : 0,
+        require_follow: s.directDelivery ? 0 : s.requireFollow ? 1 : 0,
         initial_dm_text: s.ctaText || 'お知らせ',
         initial_dm_button_label: s.ctaButtonLabel,
         follow_reminder_dm_text: s.reminderText || '（フォロー確認を使っていないため未使用）',
@@ -1029,8 +1050,12 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
 
           {/* ── セクション3: 最初のDM */}
           <section className="bg-white rounded-xl border border-gray-200 p-5">
-            <h2 className="text-sm font-semibold text-gray-900 mb-1">③ コメントがきたら、このDMを送る</h2>
-            <p className="text-[11px] text-gray-400 mb-3">ユーザーが最初に受け取るDM</p>
+            <h2 className="text-sm font-semibold text-gray-900 mb-1">③ コメント後すぐに送るDM</h2>
+            <p className="text-[11px] text-gray-400 mb-3">
+              {s.directDelivery
+                ? '本文と最後のCTAをまとめて送信します。途中の「特典を受け取る」ボタンは挟みません。'
+                : '既存キャンペーンの従来方式です。最初のボタンから次のDMへ進みます。'}
+            </p>
 
             <SlotModeToggle
               mode={s.ctaMode}
@@ -1064,7 +1089,7 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#E1306C]"
                   />
                 </div>
-                <div>
+                {!s.directDelivery && <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">ボタンの文字</label>
                   <input
                     type="text"
@@ -1075,13 +1100,13 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                   <p className="mt-1 text-[11px] text-gray-400">
                     このボタンを押すと {s.requireFollow ? 'フォロー確認 → ' : ''}特典DMが送信されます
                   </p>
-                </div>
+                </div>}
               </div>
             )}
           </section>
 
           {/* ── セクション4: フォロー確認 */}
-          <section className="bg-white rounded-xl border border-gray-200 p-5">
+          {!s.directDelivery && <section className="bg-white rounded-xl border border-gray-200 p-5">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -1134,21 +1159,39 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
                 )}
               </div>
             )}
-          </section>
+          </section>}
 
           {/* ── セクション5: 特典DM */}
           <section className="bg-white rounded-xl border border-gray-200 p-5">
-            <h2 className="text-sm font-semibold text-gray-900 mb-1">⑤ 特典DM（ボタン押下後に送る）</h2>
-            <p className="text-[11px] text-gray-400 mb-3">{s.requireFollow ? 'フォロー確認OK後に' : 'ボタン押下直後に'}届くDM</p>
+            <h2 className="text-sm font-semibold text-gray-900 mb-1">
+              {s.directDelivery ? '④ 最後のCTA' : '⑤ 特典DM（ボタン押下後に送る）'}
+            </h2>
+            <p className="text-[11px] text-gray-400 mb-3">
+              {s.directDelivery
+                ? '記事または鑑定へ直接移動する、DM末尾のカードとボタンです。'
+                : `${s.requireFollow ? 'フォロー確認OK後に' : 'ボタン押下直後に'}届くDM`}
+            </p>
 
-            <SlotModeToggle
+            {!s.directDelivery && <SlotModeToggle
               mode={s.rewardMode}
               onChange={(m) => changeSlotMode('reward', m)}
               existingCount={messagesByKind('reward').length}
               copyOnWrite={isEdit}
-            />
+            />}
 
-            {s.rewardMode === 'existing' ? (
+            {s.directDelivery && s.ctaMode === 'existing' ? (
+              <RewardUrlField
+                value={s.rewardUrl}
+                onChange={(v) => update('rewardUrl', v)}
+                connections={lineConnections}
+                connectionId={s.lineConnectionId}
+                onConnectionChange={handleConnectionChange}
+                pools={linePools}
+                poolSlug={s.linePoolSlug}
+                onPoolChange={(slug) => update('linePoolSlug', slug)}
+                help="選択したDMテンプレート内の {REWARD_URL} に、このURLが差し込まれます"
+              />
+            ) : !s.directDelivery && s.rewardMode === 'existing' ? (
               <div className="space-y-3 mt-3">
                 <ExistingMessagePicker
                   options={messagesByKind('reward')}
@@ -1370,7 +1413,9 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
             comfortably in any reasonable desktop viewport. */}
         <aside className="lg:sticky lg:top-8 self-start space-y-4">
           <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h3 className="text-xs font-semibold text-gray-500 mb-3">1. 最初のDM（コメント→自動送信）</h3>
+            <h3 className="text-xs font-semibold text-gray-500 mb-3">
+              {s.directDelivery ? 'コメント後に自動送信するDM全体' : '1. 最初のDM（コメント→自動送信）'}
+            </h3>
             <RichMessagePreview blocks={ctaPreviewBlocks} />
           </div>
           {s.requireFollow && (
@@ -1379,12 +1424,12 @@ export default function CampaignWizard({ existingGate }: CampaignWizardProps = {
               <RichMessagePreview blocks={reminderPreviewBlocks} />
             </div>
           )}
-          <div className="bg-white rounded-xl border border-gray-200 p-5">
+          {!s.directDelivery && <div className="bg-white rounded-xl border border-gray-200 p-5">
             <h3 className="text-xs font-semibold text-gray-500 mb-3">
               {s.requireFollow ? '3' : '2'}. 特典DM（ボタン押下後）
             </h3>
             <RichMessagePreview blocks={rewardPreviewBlocks} />
-          </div>
+          </div>}
         </aside>
       </div>
 
@@ -1493,6 +1538,9 @@ function hydrateStateFromGate(
     ctaText: gate.initial_dm_text ?? '',
     ctaButtonLabel: gate.initial_dm_button_label || '特典を受け取る',
 
+    // Existing campaigns retain the legacy CTA → reward sequence when
+    // edited. Newly created campaigns use directDelivery by default.
+    directDelivery: false,
     requireFollow: gate.require_follow === 1,
 
     rewardMode: rewardExisting ? 'existing' : 'new',

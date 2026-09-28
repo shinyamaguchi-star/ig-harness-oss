@@ -302,32 +302,22 @@ engagementGates.post('/api/engagement-gates', async (c) => {
   // Legacy text fields are only required when the corresponding rich-message
   // slot is NOT provided. Missing legacy text + missing rich_message_id =
   // invalid configuration.
-  const initialOk = !!body.initial_dm_text || !!body.initial_dm_rich_message_id;
-  const reminderOk = !!body.follow_reminder_dm_text || !!body.follow_reminder_dm_rich_message_id;
-  const rewardOk = !!body.reward_dm_text || !!body.reward_dm_rich_message_id;
-  if (!initialOk || !reminderOk || !rewardOk) {
-    return c.json(
-      { success: false, error: 'each DM slot needs either legacy *_dm_text or *_rich_message_id' },
-      400,
-    );
-  }
-
   // Fail fast on typo'd references — the legacy *_dm_text columns default
   // to '' when a rich_message_id is set, so a missing row would otherwise
   // cause silent empty-DM delivery at runtime.
   const requireFollow = body.require_follow ?? 1;
-  // CTA (initial) always needs CHECK_FOLLOW postback — it's the only path
-  // that advances to reward delivery, regardless of require_follow.
-  // Reminder needs CHECK_FOLLOW only when require_follow=1 (it only runs in
-  // that flow).
+  let directDelivery = false;
   for (const [field, id, enforceCheckFollow] of [
-    ['initial_dm_rich_message_id', body.initial_dm_rich_message_id, true],
+    ['initial_dm_rich_message_id', body.initial_dm_rich_message_id, requireFollow === 1],
     ['reward_dm_rich_message_id', body.reward_dm_rich_message_id, false],
     ['follow_reminder_dm_rich_message_id', body.follow_reminder_dm_rich_message_id, requireFollow === 1],
   ] as const) {
     if (id) {
       const rm = await getRichMessage(c.env.DB, id);
       if (!rm) return c.json({ success: false, error: `${field} not found: ${id}` }, 400);
+      if (field === 'initial_dm_rich_message_id') {
+        directDelivery = requireFollow === 0 && !hasCheckFollowPostback(rm.blocks);
+      }
       if (enforceCheckFollow && !hasCheckFollowPostback(rm.blocks)) {
         return c.json(
           {
@@ -338,6 +328,21 @@ engagementGates.post('/api/engagement-gates', async (c) => {
         );
       }
     }
+  }
+
+  const initialOk = !!body.initial_dm_text || !!body.initial_dm_rich_message_id;
+  const reminderOk = !!body.follow_reminder_dm_text || !!body.follow_reminder_dm_rich_message_id;
+  const rewardOk = !!body.reward_dm_text || !!body.reward_dm_rich_message_id;
+  if (!initialOk || (!directDelivery && (!reminderOk || !rewardOk))) {
+    return c.json(
+      {
+        success: false,
+        error: directDelivery
+          ? 'direct delivery needs an initial rich message'
+          : 'each DM slot needs either legacy *_dm_text or *_rich_message_id',
+      },
+      400,
+    );
   }
 
   // Normalize: junction array wins when provided. The legacy single-post
@@ -600,19 +605,10 @@ engagementGates.patch('/api/engagement-gates/:id', async (c) => {
     follow_reminder_dm_rich_message_id: pick('follow_reminder_dm_rich_message_id'),
   };
 
-  const initialOk = !!merged.initial_dm_text || !!merged.initial_dm_rich_message_id;
-  const reminderOk = !!merged.follow_reminder_dm_text || !!merged.follow_reminder_dm_rich_message_id;
-  const rewardOk = !!merged.reward_dm_text || !!merged.reward_dm_rich_message_id;
-  if (!initialOk || !reminderOk || !rewardOk) {
-    return c.json(
-      { success: false, error: 'merged gate has a DM slot with neither legacy *_dm_text nor *_rich_message_id' },
-      400,
-    );
-  }
-
   // Validate each rich-message reference that ends up on the merged row.
+  let directDelivery = false;
   for (const [field, enforceCheckFollow] of [
-    ['initial_dm_rich_message_id', true],
+    ['initial_dm_rich_message_id', merged.require_follow === 1],
     ['reward_dm_rich_message_id', false],
     ['follow_reminder_dm_rich_message_id', merged.require_follow === 1],
   ] as const) {
@@ -620,6 +616,9 @@ engagementGates.patch('/api/engagement-gates/:id', async (c) => {
     if (typeof value === 'string' && value.length > 0) {
       const rm = await getRichMessage(c.env.DB, value);
       if (!rm) return c.json({ success: false, error: `${field} not found: ${value}` }, 400);
+      if (field === 'initial_dm_rich_message_id') {
+        directDelivery = merged.require_follow === 0 && !hasCheckFollowPostback(rm.blocks);
+      }
       if (enforceCheckFollow && !hasCheckFollowPostback(rm.blocks)) {
         return c.json(
           {
@@ -630,6 +629,17 @@ engagementGates.patch('/api/engagement-gates/:id', async (c) => {
         );
       }
     }
+  }
+
+
+  const initialOk = !!merged.initial_dm_text || !!merged.initial_dm_rich_message_id;
+  const reminderOk = !!merged.follow_reminder_dm_text || !!merged.follow_reminder_dm_rich_message_id;
+  const rewardOk = !!merged.reward_dm_text || !!merged.reward_dm_rich_message_id;
+  if (!initialOk || (!directDelivery && (!reminderOk || !rewardOk))) {
+    return c.json(
+      { success: false, error: 'merged gate is missing a required DM slot' },
+      400,
+    );
   }
 
   await updateEngagementGate(c.env.DB, id, patch);

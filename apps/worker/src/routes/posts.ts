@@ -115,9 +115,9 @@ posts.post('/api/posts/bulk-apply-gates', async (c) => {
   if (!body.name_prefix) {
     return c.json({ success: false, error: 'name_prefix required' }, 400);
   }
-  if (!body.initial_dm_rich_message_id || !body.reward_dm_rich_message_id) {
+  if (!body.initial_dm_rich_message_id) {
     return c.json(
-      { success: false, error: 'initial_dm_rich_message_id and reward_dm_rich_message_id required' },
+      { success: false, error: 'initial_dm_rich_message_id required' },
       400,
     );
   }
@@ -140,10 +140,15 @@ posts.post('/api/posts/bulk-apply-gates', async (c) => {
   // Verify referenced rich messages exist before spending a reel's slot.
   const [initialRm, rewardRm] = await Promise.all([
     getRichMessage(c.env.DB, body.initial_dm_rich_message_id),
-    getRichMessage(c.env.DB, body.reward_dm_rich_message_id),
+    body.reward_dm_rich_message_id
+      ? getRichMessage(c.env.DB, body.reward_dm_rich_message_id)
+      : Promise.resolve(null),
   ]);
   if (!initialRm) return c.json({ success: false, error: 'initial_dm_rich_message_id not found' }, 400);
-  if (!rewardRm) return c.json({ success: false, error: 'reward_dm_rich_message_id not found' }, 400);
+  const directDelivery = requireFollow === 0 && !hasCheckFollowPostback(initialRm.blocks);
+  if (!directDelivery && !rewardRm) {
+    return c.json({ success: false, error: 'reward_dm_rich_message_id required for the legacy CTA flow' }, 400);
+  }
 
   if (body.follow_reminder_dm_rich_message_id) {
     const reminderRm = await getRichMessage(c.env.DB, body.follow_reminder_dm_rich_message_id);
@@ -152,9 +157,10 @@ posts.post('/api/posts/bulk-apply-gates', async (c) => {
     }
   }
 
-  // CTA always needs a CHECK_FOLLOW postback — the reward delivery path runs
-  // exclusively through handleFollowCheckPostback, independent of require_follow.
-  if (!hasCheckFollowPostback(initialRm.blocks)) {
+  // Follow-gated and legacy two-step flows advance through CHECK_FOLLOW.
+  // Direct templates (require_follow=false) contain the final URL button
+  // themselves and deliberately have no postback.
+  if (!directDelivery && !hasCheckFollowPostback(initialRm.blocks)) {
     return c.json(
       {
         success: false,
@@ -211,7 +217,7 @@ posts.post('/api/posts/bulk-apply-gates', async (c) => {
       reward_url: body.reward_url ?? null,
       max_loops: body.max_loops ?? 3,
       initial_dm_rich_message_id: body.initial_dm_rich_message_id,
-      reward_dm_rich_message_id: body.reward_dm_rich_message_id,
+      reward_dm_rich_message_id: body.reward_dm_rich_message_id ?? null,
       follow_reminder_dm_rich_message_id: body.follow_reminder_dm_rich_message_id ?? null,
       comment_reply_text: null,
       followup_dm_sequence: null,
