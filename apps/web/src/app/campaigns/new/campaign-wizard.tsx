@@ -1495,6 +1495,10 @@ function hydrateStateFromGate(
   const ctaExisting = !!gate.initial_dm_rich_message_id
   const rewardExisting = !!gate.reward_dm_rich_message_id
   const reminderExisting = !!gate.follow_reminder_dm_rich_message_id
+  // One initial rich message with no reward slot is the one-step format.
+  // Preserve it on edit so a save cannot silently restore the legacy
+  // postback -> reward two-step flow.
+  const directDelivery = ctaExisting && !rewardExisting
 
   // Decode the comment_reply_text column (plain string or JSON array) back
   // to the 1-10 textarea slots.
@@ -1538,9 +1542,7 @@ function hydrateStateFromGate(
     ctaText: gate.initial_dm_text ?? '',
     ctaButtonLabel: gate.initial_dm_button_label || '特典を受け取る',
 
-    // Existing campaigns retain the legacy CTA → reward sequence when
-    // edited. Newly created campaigns use directDelivery by default.
-    directDelivery: false,
+    directDelivery,
     requireFollow: gate.require_follow === 1,
 
     rewardMode: rewardExisting ? 'existing' : 'new',

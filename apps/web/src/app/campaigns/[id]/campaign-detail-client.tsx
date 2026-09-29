@@ -282,6 +282,7 @@ export default function CampaignDetailClient() {
   const ctaBlocks = slotBlocks(gate.initial_dm_rich_message_id)
   const reminderBlocks = gate.require_follow ? slotBlocks(gate.follow_reminder_dm_rich_message_id) : []
   const rewardBlocks = slotBlocks(gate.reward_dm_rich_message_id)
+  const directDelivery = !!gate.initial_dm_rich_message_id && !gate.reward_dm_rich_message_id
 
   return (
     <div>
@@ -546,15 +547,19 @@ export default function CampaignDetailClient() {
           <FlowArrow text="自動で DM 配信" />
           <DmFlowCard
             step="1"
-            label="最初のDM"
+            label={directDelivery ? '自動送信DM（全文＋CTA）' : '最初のDM'}
             blocks={ctaBlocks}
             extraNote={
-              gate.require_follow
+              directDelivery
+                ? gate.reward_url
+                  ? `DM内のボタンから → ${gate.reward_url}`
+                  : undefined
+                : gate.require_follow
                 ? 'ユーザーが「受け取る」を押すと → フォロー確認へ'
                 : 'ユーザーが「受け取る」を押すと → 特典DMへ直行'
             }
           />
-          {!!gate.require_follow && (
+          {!directDelivery && !!gate.require_follow && (
             <>
               <FlowArrow text="フォロー済みか IG に問い合わせ" />
               <FlowStep
@@ -572,16 +577,18 @@ export default function CampaignDetailClient() {
               <FlowArrow text="フォロー済みの場合" />
             </>
           )}
-          <DmFlowCard
-            step={gate.require_follow ? '2b' : '2'}
-            label="特典DM"
-            blocks={rewardBlocks}
-            extraNote={
-              gate.reward_url
-                ? `ユーザーが「詳細を見る」を押すと → ${gate.reward_url}`
-                : 'URL 未設定'
-            }
-          />
+          {!directDelivery && (
+            <DmFlowCard
+              step={gate.require_follow ? '2b' : '2'}
+              label="特典DM"
+              blocks={rewardBlocks}
+              extraNote={
+                gate.reward_url
+                  ? `ユーザーが「詳細を見る」を押すと → ${gate.reward_url}`
+                  : 'URL 未設定'
+              }
+            />
+          )}
           {parseFollowupsForDetail(gate.followup_dm_sequence).map((step, idx) => (
             <div key={`fup-${idx}`}>
               <FlowArrow text={`${step.delay_minutes} 分後`} />
