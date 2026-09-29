@@ -84,10 +84,10 @@ posts.get('/api/posts/my-media', async (c) => {
  *   reel_ids: string[] (required, ≤100)
  *   name_prefix: string (required)
  *   trigger_keyword?: string | null  -- null = any_comment mode
- *   require_follow: boolean (default true)
+ *   require_follow: false (optional; true is rejected)
  *   initial_dm_rich_message_id: string (required)
- *   reward_dm_rich_message_id: string (required)
- *   follow_reminder_dm_rich_message_id?: string
+ *   reward_dm_rich_message_id: unsupported (two-step delivery is disabled)
+ *   follow_reminder_dm_rich_message_id: unsupported (two-step delivery is disabled)
  *   reward_url?: string
  *   max_loops?: number (default 3)
  */
@@ -122,67 +122,39 @@ posts.post('/api/posts/bulk-apply-gates', async (c) => {
     );
   }
 
-  const requireFollow = body.require_follow === false ? 0 : 1;
+  const requireFollow = body.require_follow === true ? 1 : 0;
 
-  // When follow verification is enabled, a reminder DM is part of the loop.
-  // Without a reminder template, non-followers would receive an empty DM.
-  if (requireFollow === 1 && !body.follow_reminder_dm_rich_message_id) {
+  // Bulk creation follows the same one-step-only rule as the normal campaign
+  // endpoint. Historical two-step campaigns may keep running, but this route
+  // must never create another one.
+  if (
+    requireFollow !== 0 ||
+    body.reward_dm_rich_message_id ||
+    body.follow_reminder_dm_rich_message_id
+  ) {
     return c.json(
       {
         success: false,
         error:
-          'follow_reminder_dm_rich_message_id required when require_follow is true (non-followers receive the reminder DM)',
+          'two-step delivery is disabled: bulk campaigns must use one direct initial rich message',
       },
       400,
     );
   }
 
   // Verify referenced rich messages exist before spending a reel's slot.
-  const [initialRm, rewardRm] = await Promise.all([
-    getRichMessage(c.env.DB, body.initial_dm_rich_message_id),
-    body.reward_dm_rich_message_id
-      ? getRichMessage(c.env.DB, body.reward_dm_rich_message_id)
-      : Promise.resolve(null),
-  ]);
+  const initialRm = await getRichMessage(c.env.DB, body.initial_dm_rich_message_id);
   if (!initialRm) return c.json({ success: false, error: 'initial_dm_rich_message_id not found' }, 400);
   const directDelivery = requireFollow === 0 && !hasCheckFollowPostback(initialRm.blocks);
-  if (!directDelivery && !rewardRm) {
-    return c.json({ success: false, error: 'reward_dm_rich_message_id required for the legacy CTA flow' }, 400);
-  }
-
-  if (body.follow_reminder_dm_rich_message_id) {
-    const reminderRm = await getRichMessage(c.env.DB, body.follow_reminder_dm_rich_message_id);
-    if (!reminderRm) {
-      return c.json({ success: false, error: 'follow_reminder_dm_rich_message_id not found' }, 400);
-    }
-  }
-
-  // Follow-gated and legacy two-step flows advance through CHECK_FOLLOW.
-  // Direct templates (require_follow=false) contain the final URL button
-  // themselves and deliberately have no postback.
-  if (!directDelivery && !hasCheckFollowPostback(initialRm.blocks)) {
+  if (!directDelivery) {
     return c.json(
       {
         success: false,
         error:
-          'initial_dm_rich_message_id must contain a postback button with payload "CHECK_FOLLOW:{GATE_ID}:{DELIVERY_ID}" — without it, deliveries stall in cta_sent',
+          'two-step delivery is disabled: initial_dm_rich_message_id must not contain CHECK_FOLLOW',
       },
       400,
     );
-  }
-  // Reminder is only sent in the require_follow=1 loop.
-  if (requireFollow === 1 && body.follow_reminder_dm_rich_message_id) {
-    const reminderRm = await getRichMessage(c.env.DB, body.follow_reminder_dm_rich_message_id);
-    if (reminderRm && !hasCheckFollowPostback(reminderRm.blocks)) {
-      return c.json(
-        {
-          success: false,
-          error:
-            'follow_reminder_dm_rich_message_id must contain a postback button with payload "CHECK_FOLLOW:{GATE_ID}:{DELIVERY_ID}" when require_follow=true',
-        },
-        400,
-      );
-    }
   }
 
   // Existing non-archived gates keyed by target_post_id.
@@ -217,8 +189,8 @@ posts.post('/api/posts/bulk-apply-gates', async (c) => {
       reward_url: body.reward_url ?? null,
       max_loops: body.max_loops ?? 3,
       initial_dm_rich_message_id: body.initial_dm_rich_message_id,
-      reward_dm_rich_message_id: body.reward_dm_rich_message_id ?? null,
-      follow_reminder_dm_rich_message_id: body.follow_reminder_dm_rich_message_id ?? null,
+      reward_dm_rich_message_id: null,
+      follow_reminder_dm_rich_message_id: null,
       comment_reply_text: null,
       followup_dm_sequence: null,
       line_connection_id: null,

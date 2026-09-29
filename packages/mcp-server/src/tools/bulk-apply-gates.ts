@@ -20,7 +20,8 @@ export function registerBulkApplyGatesToReels(server: McpServer): void {
         .describe("Rich message ID for the CTA DM sent when a comment fires the gate."),
       reward_dm_rich_message_id: z
         .string()
-        .describe("Rich message ID for the reward DM sent after follow verification."),
+        .optional()
+        .describe("Deprecated. Two-step delivery is disabled; omit this field."),
       follow_reminder_dm_rich_message_id: z
         .string()
         .optional()
@@ -33,7 +34,7 @@ export function registerBulkApplyGatesToReels(server: McpServer): void {
       require_follow: z
         .boolean()
         .optional()
-        .describe("true (default) = verify follow before reward. false = reward everyone."),
+        .describe("Must be false or omitted. New campaigns always send the complete DM immediately."),
       reward_url: z
         .string()
         .optional()
@@ -69,7 +70,7 @@ export function registerBulkApplyGatesToReels(server: McpServer): void {
           reward_dm_rich_message_id,
           follow_reminder_dm_rich_message_id,
           trigger_keyword: trigger_keyword ?? null,
-          require_follow: require_follow ?? true,
+          require_follow: require_follow ?? false,
           reward_url,
           max_loops: max_loops ?? 3,
         });

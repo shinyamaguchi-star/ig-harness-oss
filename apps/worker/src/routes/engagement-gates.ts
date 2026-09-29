@@ -305,7 +305,7 @@ engagementGates.post('/api/engagement-gates', async (c) => {
   // Fail fast on typo'd references — the legacy *_dm_text columns default
   // to '' when a rich_message_id is set, so a missing row would otherwise
   // cause silent empty-DM delivery at runtime.
-  const requireFollow = body.require_follow ?? 1;
+  const requireFollow = body.require_follow ?? 0;
   let directDelivery = false;
   for (const [field, id, enforceCheckFollow] of [
     ['initial_dm_rich_message_id', body.initial_dm_rich_message_id, requireFollow === 1],
@@ -330,16 +330,20 @@ engagementGates.post('/api/engagement-gates', async (c) => {
     }
   }
 
-  const initialOk = !!body.initial_dm_text || !!body.initial_dm_rich_message_id;
-  const reminderOk = !!body.follow_reminder_dm_text || !!body.follow_reminder_dm_rich_message_id;
-  const rewardOk = !!body.reward_dm_text || !!body.reward_dm_rich_message_id;
-  if (!initialOk || (!directDelivery && (!reminderOk || !rewardOk))) {
+  // New campaigns must always deliver the complete DM immediately. The old
+  // CTA -> postback -> reward sequence is kept only so historical campaigns
+  // can continue running; creating another two-step campaign is forbidden.
+  if (
+    !directDelivery ||
+    requireFollow !== 0 ||
+    !!body.reward_dm_rich_message_id ||
+    !!body.follow_reminder_dm_rich_message_id
+  ) {
     return c.json(
       {
         success: false,
-        error: directDelivery
-          ? 'direct delivery needs an initial rich message'
-          : 'each DM slot needs either legacy *_dm_text or *_rich_message_id',
+        error:
+          'two-step delivery is disabled: use one initial rich message without CHECK_FOLLOW and send the full DM immediately',
       },
       400,
     );
@@ -377,7 +381,7 @@ engagementGates.post('/api/engagement-gates', async (c) => {
       body.trigger_type === 'comment_on_post' && normalizedKeywords.keywords.length > 0
         ? JSON.stringify(normalizedKeywords.keywords)
         : null,
-    require_follow: body.require_follow ?? 1,
+    require_follow: 0,
     initial_dm_text: body.initial_dm_text ?? '',
     initial_dm_button_label: body.initial_dm_button_label ?? '特典を受け取る',
     follow_reminder_dm_text: body.follow_reminder_dm_text ?? '',
@@ -386,8 +390,8 @@ engagementGates.post('/api/engagement-gates', async (c) => {
     reward_url: body.reward_url ?? null,
     max_loops: body.max_loops ?? 0,
     initial_dm_rich_message_id: body.initial_dm_rich_message_id ?? null,
-    reward_dm_rich_message_id: body.reward_dm_rich_message_id ?? null,
-    follow_reminder_dm_rich_message_id: body.follow_reminder_dm_rich_message_id ?? null,
+    reward_dm_rich_message_id: null,
+    follow_reminder_dm_rich_message_id: null,
     comment_reply_text: body.comment_reply_text ?? null,
     followup_dm_sequence: body.followup_dm_sequence ?? null,
     line_connection_id: body.line_connection_id ?? null,

@@ -70,7 +70,7 @@ export function registerManageEngagementGates(server: McpServer): void {
         .min(0)
         .max(1)
         .optional()
-        .describe("Whether follow is required before reward (1=required, 0=skip check)"),
+        .describe("For create, must be 0 or omitted. New campaigns always send the complete DM immediately."),
       max_loops: z
         .number()
         .int()
@@ -85,17 +85,17 @@ export function registerManageEngagementGates(server: McpServer): void {
         .string()
         .nullable()
         .optional()
-        .describe("Rich message ID used as the CTA DM. When set, overrides initial_dm_text at send."),
+        .describe("Complete direct-delivery rich message ID. It must not contain CHECK_FOLLOW."),
       reward_dm_rich_message_id: z
         .string()
         .nullable()
         .optional()
-        .describe("Rich message ID used as the reward DM. When set, overrides reward_dm_text at send."),
+        .describe("Deprecated for create. Two-step delivery is disabled."),
       follow_reminder_dm_rich_message_id: z
         .string()
         .nullable()
         .optional()
-        .describe("Rich message ID used as the follow-reminder DM. When set, overrides follow_reminder_dm_text at send."),
+        .describe("Deprecated for create. Two-step delivery is disabled."),
     },
     async ({
       action,
@@ -145,13 +145,12 @@ export function registerManageEngagementGates(server: McpServer): void {
           if (!name) throw new Error("name is required for create");
           if (!trigger_type) throw new Error("trigger_type is required for create");
 
-          // Each DM slot must be covered either by legacy text or by a rich message.
-          const initialOk = !!initial_dm_text || !!initial_dm_rich_message_id;
-          const reminderOk = !!follow_reminder_dm_text || !!follow_reminder_dm_rich_message_id;
-          const rewardOk = !!reward_dm_text || !!reward_dm_rich_message_id;
-          if (!initialOk) throw new Error("initial_dm_text or initial_dm_rich_message_id required for create");
-          if (!reminderOk) throw new Error("follow_reminder_dm_text or follow_reminder_dm_rich_message_id required for create");
-          if (!rewardOk) throw new Error("reward_dm_text or reward_dm_rich_message_id required for create");
+          if (!initial_dm_rich_message_id) {
+            throw new Error("initial_dm_rich_message_id required for direct delivery");
+          }
+          if (require_follow === 1 || reward_dm_rich_message_id || follow_reminder_dm_rich_message_id) {
+            throw new Error("two-step delivery is disabled; create one direct initial DM only");
+          }
 
           const input: Record<string, unknown> = {
             name,
@@ -162,7 +161,7 @@ export function registerManageEngagementGates(server: McpServer): void {
           if (reward_dm_text !== undefined) input.reward_dm_text = reward_dm_text;
           if (target_post_id !== undefined) input.target_post_id = target_post_id;
           if (trigger_keyword !== undefined) input.trigger_keyword = trigger_keyword;
-          if (require_follow !== undefined) input.require_follow = require_follow;
+          input.require_follow = false;
           if (initial_dm_button_label !== undefined)
             input.initial_dm_button_label = initial_dm_button_label;
           if (follow_reminder_button_label !== undefined)
@@ -172,10 +171,6 @@ export function registerManageEngagementGates(server: McpServer): void {
           if (status !== undefined) input.status = status;
           if (initial_dm_rich_message_id !== undefined)
             input.initial_dm_rich_message_id = initial_dm_rich_message_id;
-          if (reward_dm_rich_message_id !== undefined)
-            input.reward_dm_rich_message_id = reward_dm_rich_message_id;
-          if (follow_reminder_dm_rich_message_id !== undefined)
-            input.follow_reminder_dm_rich_message_id = follow_reminder_dm_rich_message_id;
           if (line_connection_id !== undefined) input.line_connection_id = line_connection_id;
           if (line_pool_slug !== undefined) input.line_pool_slug = line_pool_slug;
 

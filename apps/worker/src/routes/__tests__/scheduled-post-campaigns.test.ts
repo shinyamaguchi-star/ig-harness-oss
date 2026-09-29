@@ -10,6 +10,7 @@ vi.mock('@ig-harness/db', async (importOriginal) => {
     attachCampaignToMediaPost: vi.fn(),
     deleteEngagementGate: vi.fn(),
     getEngagementGate: vi.fn(),
+    getRichMessage: vi.fn(),
     listMediaPosts: vi.fn(),
     replaceScheduledCampaignMediaPosts: vi.fn(),
   };
@@ -25,6 +26,7 @@ import {
   getMediaPostById,
   attachCampaignToMediaPost,
   getEngagementGate,
+  getRichMessage,
   listMediaPosts,
   replaceScheduledCampaignMediaPosts,
 } from '@ig-harness/db';
@@ -127,6 +129,17 @@ describe('POST /api/engagement-gates with a new scheduled campaign', () => {
     vi.clearAllMocks();
     vi.mocked(resolveAccount).mockResolvedValue(account as any);
     vi.mocked(getMediaPostById).mockResolvedValue(post('post-1') as any);
+    vi.mocked(getRichMessage).mockResolvedValue({
+      id: 'rich-direct',
+      blocks: [
+        { type: 'text', text: '最初の本文' },
+        {
+          type: 'card',
+          title: 'ご案内',
+          buttons: [{ type: 'url', label: '記事を受け取る', url: '{REWARD_URL}' }],
+        },
+      ],
+    } as any);
     vi.mocked(createEngagementGate).mockResolvedValue({
       id: 'gate-new',
       account_id: account.id,
@@ -149,9 +162,8 @@ describe('POST /api/engagement-gates with a new scheduled campaign', () => {
           name: 'new scheduled campaign',
           trigger_type: 'comment_on_post',
           trigger_keywords: ['案内'],
-          initial_dm_text: '最初のDM',
-          follow_reminder_dm_text: '確認DM',
-          reward_dm_text: '特典DM',
+          require_follow: 0,
+          initial_dm_rich_message_id: 'rich-direct',
           scheduled_media_post_id: 'post-1',
         }),
       }),
@@ -172,5 +184,49 @@ describe('POST /api/engagement-gates with a new scheduled campaign', () => {
       'pending',
       true,
     );
+  });
+
+  it('rejects the retired two-step CTA flow without creating a campaign', async () => {
+    vi.mocked(getRichMessage).mockResolvedValueOnce({
+      id: 'rich-cta',
+      blocks: [
+        {
+          type: 'card',
+          title: '特典を受け取る',
+          buttons: [
+            {
+              type: 'postback',
+              label: '受け取る',
+              payload: 'CHECK_FOLLOW:{GATE_ID}:{DELIVERY_ID}',
+            },
+          ],
+        },
+      ],
+    } as any);
+
+    const response = await engagementGates.fetch(
+      new Request('https://worker.example/api/engagement-gates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'retired two-step campaign',
+          trigger_type: 'comment_on_post',
+          require_follow: 0,
+          initial_dm_rich_message_id: 'rich-cta',
+          reward_dm_text: '特典DM',
+          scheduled_media_post_id: 'post-1',
+        }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      success: false,
+      error: expect.stringContaining('two-step delivery is disabled'),
+    });
+    expect(createEngagementGate).not.toHaveBeenCalled();
+    expect(attachCampaignToMediaPost).not.toHaveBeenCalled();
   });
 });
