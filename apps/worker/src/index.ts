@@ -28,7 +28,10 @@ import { capabilities } from './routes/capabilities.js';
 import { mediaPosts } from './routes/media-posts.js';
 import { postInsights } from './routes/post-insights.js';
 import { processMediaPosts } from './services/media-publish.js';
-import { processPostInsightSnapshots } from './services/post-insights.js';
+import {
+  processPostInsightSnapshots,
+  syncExternalPublishedMedia,
+} from './services/post-insights.js';
 import { processConversationBackfill } from './services/conversation-sync.js';
 import { ensureDefaultAccount, getAccountClient, toIgAccountRef } from './lib/accounts.js';
 import { recordCronRun, recordTokenValidity } from './lib/health.js';
@@ -448,6 +451,7 @@ async function scheduled(
     // Analytics are deliberately last. A delayed snapshot can be retried,
     // while publishing and customer-facing automatic replies are time-sensitive.
     try {
+      await syncExternalPublishedMedia(env.DB, igClient, account.id);
       await processPostInsightSnapshots(env.DB, igClient, account.id);
     } catch (err) {
       console.error(`[cron] processPostInsightSnapshots failed for account=${account.id}:`, err);

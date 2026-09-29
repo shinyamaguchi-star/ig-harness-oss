@@ -47,6 +47,109 @@ export interface PostInsightSeriesRow extends PostInsightSnapshot {
   published_at: string;
 }
 
+export interface ImportPublishedMediaForInsightsInput {
+  accountId: string;
+  instagramMediaId: string;
+  postType: 'feed_image' | 'carousel' | 'reel' | 'story';
+  title: string | null;
+  caption: string | null;
+  media: Array<{ url: string; type: 'image' | 'video' }>;
+  publishedAt: string;
+}
+
+/** Register media that was published outside IG Harness so the normal +24h
+ * and +168h insight collector can track it. If a single published placeholder
+ * exists near the Instagram timestamp (the smartphone-post workflow), link
+ * that row instead of creating a duplicate. */
+export async function importPublishedMediaForInsights(
+  db: D1Database,
+  input: ImportPublishedMediaForInsightsInput,
+): Promise<boolean> {
+  const existing = await db
+    .prepare(
+      `SELECT id FROM media_posts
+       WHERE account_id = ? AND published_media_id = ?
+       LIMIT 1`,
+    )
+    .bind(input.accountId, input.instagramMediaId)
+    .first<{ id: string }>();
+  if (existing) return false;
+
+  const candidates = await db
+    .prepare(
+      `SELECT id FROM media_posts
+       WHERE account_id = ?
+         AND status = 'published'
+         AND published_media_id IS NULL
+         AND published_at IS NOT NULL
+         AND ABS(strftime('%s', published_at) - strftime('%s', ?)) <= 21600
+       ORDER BY ABS(strftime('%s', published_at) - strftime('%s', ?)) ASC
+       LIMIT 2`,
+    )
+    .bind(input.accountId, input.publishedAt, input.publishedAt)
+    .all<{ id: string }>();
+
+  const now = jstNow();
+  if (candidates.results.length === 1) {
+    const linked = await db
+      .prepare(
+        `UPDATE media_posts
+         SET published_media_id = ?, published_at = ?, scheduled_at = ?,
+             post_type = ?, media = ?, caption = COALESCE(caption, ?),
+             title = COALESCE(title, ?), updated_at = ?
+         WHERE id = ? AND account_id = ? AND published_media_id IS NULL`,
+      )
+      .bind(
+        input.instagramMediaId,
+        input.publishedAt,
+        input.publishedAt,
+        input.postType,
+        JSON.stringify(input.media),
+        input.caption,
+        input.title,
+        now,
+        candidates.results[0].id,
+        input.accountId,
+      )
+      .run();
+    if ((linked.meta.changes ?? 0) === 1) return true;
+  }
+
+  const inserted = await db
+    .prepare(
+      `INSERT INTO media_posts
+       (id, account_id, title, post_type, media, caption, cover_url,
+        thumb_offset_ms, status, scheduled_at, creation_id,
+        child_creation_ids, published_media_id, published_at, attempt_count,
+        last_attempt_at, next_retry_at, error, campaign_gate_id,
+        campaign_activation_status, campaign_error, campaign_auto_activate,
+        created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, ?, NULL, NULL, 'published', ?, NULL, NULL, ?, ?,
+              0, NULL, NULL, NULL, NULL, NULL, NULL, 0, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM media_posts
+         WHERE account_id = ? AND published_media_id = ?
+       )`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      input.accountId,
+      input.title,
+      input.postType,
+      JSON.stringify(input.media),
+      input.caption,
+      input.publishedAt,
+      input.instagramMediaId,
+      input.publishedAt,
+      now,
+      now,
+      input.accountId,
+      input.instagramMediaId,
+    )
+    .run();
+  return (inserted.meta.changes ?? 0) === 1;
+}
+
 /** Return the oldest uncollected checkpoint per post, capped to protect the
  * cron invocation and Meta rate limits. Only posts published after this
  * feature was installed have published_at; older posts are intentionally not

@@ -1,9 +1,10 @@
 import {
   getDuePostInsightCheckpoints,
+  importPublishedMediaForInsights,
   savePostInsightSnapshot,
   type DuePostInsightCheckpoint,
 } from '@ig-harness/db';
-import type { InstagramClient, MediaInsightResult } from '@ig-harness/ig-sdk';
+import type { InstagramClient, MediaInfo, MediaInsightResult } from '@ig-harness/ig-sdk';
 
 const COMMON_METRICS = [
   'views',
@@ -14,6 +15,57 @@ const COMMON_METRICS = [
   'shares',
   'total_interactions',
 ] as const;
+
+export function postTypeForInstagramMedia(
+  media: Pick<MediaInfo, 'media_type' | 'media_product_type'>,
+): DuePostInsightCheckpoint['post_type'] {
+  if (media.media_product_type === 'STORY') return 'story';
+  if (media.media_product_type === 'REELS') return 'reel';
+  if (media.media_type === 'CAROUSEL_ALBUM') return 'carousel';
+  return 'feed_image';
+}
+
+function importedPostTitle(caption?: string): string {
+  const firstLine = caption?.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  return firstLine ? firstLine.slice(0, 80) : 'Instagram直接投稿';
+}
+
+/** Discover posts made directly from Instagram (including smartphone posts)
+ * and register them for the same checkpoint collector used by Harness posts.
+ * A short lookback avoids relabeling old cumulative totals as historical +24h
+ * values, while still recovering posts missed during a temporary outage. */
+export async function syncExternalPublishedMedia(
+  db: D1Database,
+  client: Pick<InstagramClient, 'getMyMedia'>,
+  accountId: string,
+  now = new Date(),
+): Promise<number> {
+  const recent = await client.getMyMedia(25);
+  const earliest = now.getTime() - 72 * 60 * 60 * 1000;
+  let imported = 0;
+
+  for (const item of recent) {
+    const published = new Date(item.timestamp);
+    if (!Number.isFinite(published.getTime()) || published.getTime() < earliest) continue;
+    if (published.getTime() > now.getTime() + 5 * 60 * 1000) continue;
+
+    const postType = postTypeForInstagramMedia(item);
+    const sourceUrl = item.media_url ?? item.thumbnail_url;
+    const didImport = await importPublishedMediaForInsights(db, {
+      accountId,
+      instagramMediaId: item.id,
+      postType,
+      title: importedPostTitle(item.caption),
+      caption: item.caption ?? null,
+      media: sourceUrl
+        ? [{ url: sourceUrl, type: item.media_type === 'VIDEO' ? 'video' : 'image' }]
+        : [],
+      publishedAt: published.toISOString(),
+    });
+    if (didImport) imported += 1;
+  }
+  return imported;
+}
 
 export function metricsForPostType(
   postType: DuePostInsightCheckpoint['post_type'],

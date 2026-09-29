@@ -3,6 +3,7 @@ import {
   collectPostInsights,
   metricsForPostType,
   numericInsightValue,
+  postTypeForInstagramMedia,
 } from '../post-insights.js';
 
 const POST = {
@@ -18,6 +19,12 @@ const POST = {
 };
 
 describe('post insight metric selection', () => {
+  it('maps Instagram media created outside Harness to a supported post type', () => {
+    expect(postTypeForInstagramMedia({ media_type: 'VIDEO', media_product_type: 'REELS' })).toBe('reel');
+    expect(postTypeForInstagramMedia({ media_type: 'CAROUSEL_ALBUM', media_product_type: 'FEED' })).toBe('carousel');
+    expect(postTypeForInstagramMedia({ media_type: 'IMAGE', media_product_type: 'FEED' })).toBe('feed_image');
+  });
+
   it('uses views rather than deprecated impressions', () => {
     const metrics = metricsForPostType('feed_image');
     expect(metrics).toContain('views');
