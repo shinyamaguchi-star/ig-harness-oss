@@ -9,6 +9,7 @@ import {
   completeBroadcastQueueItem,
   getBroadcastQueueCounts,
   getBroadcastAttemptsToday,
+  getAccountBroadcastAttemptsToday,
   releaseBroadcastQueueItem,
   setBroadcastBackoff,
 } from '@ig-harness/db';
@@ -29,6 +30,9 @@ const QUEUE_DISPATCH_SIZE = 40;
 // This avoids the old pattern of releasing dozens of sends at once while still
 // allowing 200 recipients during a five-hour delivery window.
 const CONTINUOUS_DISPATCH_SIZE = 1;
+// Cost and anti-spam guard shared by every broadcast owned by one Instagram
+// account. Multiple broadcasts cannot each consume another 200 recipients.
+export const ACCOUNT_DAILY_BROADCAST_LIMIT = 200;
 
 export interface BroadcastWorkItem {
   broadcastId: number | string;
@@ -200,20 +204,24 @@ export async function enqueueBroadcastWork(
   const attemptedToday = broadcast.daily_limit === null
     ? 0
     : await getBroadcastAttemptsToday(db, broadcastId);
+  const accountAttemptedToday = broadcast.account_id
+    ? await getAccountBroadcastAttemptsToday(db, broadcast.account_id)
+    : attemptedToday;
   const dispatchSize = broadcast.auto_append_recipients === 1
     ? CONTINUOUS_DISPATCH_SIZE
     : QUEUE_DISPATCH_SIZE;
   const remainingToday = broadcast.daily_limit === null
     ? dispatchSize
     : Math.max(0, broadcast.daily_limit - attemptedToday);
+  const accountRemainingToday = Math.max(0, ACCOUNT_DAILY_BROADCAST_LIMIT - accountAttemptedToday);
   const pending = await getPendingBroadcastQueue(
     db,
     broadcastId,
-    Math.min(dispatchSize, remainingToday),
+    Math.min(dispatchSize, remainingToday, accountRemainingToday),
   );
   const claimed = [] as typeof pending;
   for (const item of pending) {
-    if (await claimBroadcastQueueItem(db, item.id)) claimed.push(item);
+    if (await claimBroadcastQueueItem(db, item.id, ACCOUNT_DAILY_BROADCAST_LIMIT)) claimed.push(item);
   }
   if (claimed.length > 0) {
     try {
@@ -367,19 +375,23 @@ export async function processBroadcastSend(
     const attemptedToday = broadcast.daily_limit === null
       ? 0
       : await getBroadcastAttemptsToday(db, broadcastId);
+    const accountAttemptedToday = broadcast.account_id
+      ? await getAccountBroadcastAttemptsToday(db, broadcast.account_id)
+      : attemptedToday;
     const dispatchSize = broadcast.auto_append_recipients === 1
       ? CONTINUOUS_DISPATCH_SIZE
       : BATCH_SIZE;
     const remainingToday = broadcast.daily_limit === null
       ? dispatchSize
       : Math.max(0, broadcast.daily_limit - attemptedToday);
+    const accountRemainingToday = Math.max(0, ACCOUNT_DAILY_BROADCAST_LIMIT - accountAttemptedToday);
     const batch = await getPendingBroadcastQueue(
       db,
       broadcastId,
-      Math.min(dispatchSize, remainingToday),
+      Math.min(dispatchSize, remainingToday, accountRemainingToday),
     );
     for (const recipient of batch) {
-      if (!(await claimBroadcastQueueItem(db, recipient.id))) continue;
+      if (!(await claimBroadcastQueueItem(db, recipient.id, ACCOUNT_DAILY_BROADCAST_LIMIT))) continue;
       try {
         await sendIgMessage(igClient, recipient.recipient_igsid, broadcast.message_type, messageBody);
         await completeBroadcastQueueItem(db, {

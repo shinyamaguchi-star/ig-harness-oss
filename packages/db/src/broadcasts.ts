@@ -452,12 +452,35 @@ export async function getPendingBroadcastQueue(
 export async function claimBroadcastQueueItem(
   db: D1Database,
   id: number | string,
+  accountDailyLimit = 200,
 ): Promise<boolean> {
   const result = await db
     .prepare(
       `UPDATE broadcast_queue
        SET status = 'processing', claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now'))
        WHERE id = ? AND status = 'pending'
+         AND (
+           (SELECT COUNT(*)
+            FROM broadcast_deliveries d
+            INNER JOIN broadcasts b ON b.id = d.broadcast_id
+            WHERE b.account_id = (
+              SELECT owner.account_id
+              FROM broadcasts owner
+              WHERE owner.id = broadcast_queue.broadcast_id
+            )
+              AND date(d.attempted_at, '+9 hours') = date('now', '+9 hours'))
+           +
+           (SELECT COUNT(*)
+            FROM broadcast_queue q
+            INNER JOIN broadcasts b ON b.id = q.broadcast_id
+            WHERE b.account_id = (
+              SELECT owner.account_id
+              FROM broadcasts owner
+              WHERE owner.id = broadcast_queue.broadcast_id
+            )
+              AND q.status = 'processing'
+              AND date(q.claimed_at, '+9 hours') = date('now', '+9 hours'))
+         ) < ?
          AND (
            (SELECT daily_limit FROM broadcasts WHERE id = broadcast_queue.broadcast_id) IS NULL
            OR (
@@ -472,7 +495,7 @@ export async function claimBroadcastQueueItem(
            ) < (SELECT daily_limit FROM broadcasts WHERE id = broadcast_queue.broadcast_id)
          )`,
     )
-    .bind(id)
+    .bind(id, accountDailyLimit)
     .run();
   return Number(result.meta.changes ?? 0) === 1;
 }
@@ -574,6 +597,25 @@ export async function getBroadcastAttemptsToday(
          AND date(attempted_at, '+9 hours') = date('now', '+9 hours')`,
     )
     .bind(broadcastId)
+    .first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
+/** Account-wide attempts today in Asia/Tokyo. This prevents multiple active
+ * broadcasts from each consuming a full per-broadcast allowance. */
+export async function getAccountBroadcastAttemptsToday(
+  db: D1Database,
+  accountId: string,
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM broadcast_deliveries d
+       INNER JOIN broadcasts b ON b.id = d.broadcast_id
+       WHERE b.account_id = ?
+         AND date(d.attempted_at, '+9 hours') = date('now', '+9 hours')`,
+    )
+    .bind(accountId)
     .first<{ count: number }>();
   return Number(row?.count ?? 0);
 }

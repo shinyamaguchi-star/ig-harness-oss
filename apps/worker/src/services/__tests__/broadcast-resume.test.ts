@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   completeBroadcastQueueItem: vi.fn(),
   getBroadcastQueueCounts: vi.fn(),
   getBroadcastAttemptsToday: vi.fn(),
+  getAccountBroadcastAttemptsToday: vi.fn(),
   setBroadcastBackoff: vi.fn(),
   recordDmFailure: vi.fn(),
 }));
@@ -68,6 +69,7 @@ describe('resumable broadcasts', () => {
     mocks.completeBroadcastQueueItem.mockResolvedValue(undefined);
     mocks.updateBroadcastStatus.mockResolvedValue(undefined);
     mocks.getBroadcastAttemptsToday.mockResolvedValue(0);
+    mocks.getAccountBroadcastAttemptsToday.mockResolvedValue(0);
     mocks.recordDmFailure.mockResolvedValue(undefined);
   });
 
@@ -151,6 +153,19 @@ describe('resumable broadcasts', () => {
       'sending',
       expect.objectContaining({ successCount: 100 }),
     );
+  });
+
+  it('shares the 200-recipient daily cap across broadcasts for one account', async () => {
+    mocks.getBroadcastById.mockResolvedValue({ ...broadcast, daily_limit: null });
+    mocks.getAccountBroadcastAttemptsToday.mockResolvedValue(200);
+    mocks.getPendingBroadcastQueue.mockResolvedValue([]);
+    mocks.getBroadcastQueueCounts.mockResolvedValue({
+      total: 120, pending: 120, processing: 0, success: 0, failed: 0,
+    });
+
+    await processBroadcastSend({} as D1Database, {} as never, 7, undefined, 'account-1');
+
+    expect(mocks.getPendingBroadcastQueue).toHaveBeenCalledWith({} as D1Database, 7, 0);
   });
 
   it('drip-feeds one recipient and keeps a rolling broadcast active when caught up', async () => {
