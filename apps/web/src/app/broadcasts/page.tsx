@@ -22,6 +22,7 @@ const STATUS: Record<string, { label: string; classes: string }> = {
   draft: { label: '下書き', classes: 'bg-gray-100 text-gray-600' },
   scheduled: { label: '予約済み', classes: 'bg-blue-100 text-blue-700' },
   sending: { label: '送信中', classes: 'bg-yellow-100 text-yellow-700' },
+  daily_paused: { label: '翌日再開待ち', classes: 'bg-purple-100 text-purple-700' },
   sent: { label: '送信完了', classes: 'bg-green-100 text-green-700' },
 }
 
@@ -80,6 +81,17 @@ function parseTagId(filter: string | null): string {
   }
 }
 
+function readDeliveryWindow(item: BroadcastApi): { start: string; end: string } {
+  try {
+    const body = JSON.parse(item.body) as { delivery_window?: { start?: unknown; end?: unknown } }
+    const start = typeof body.delivery_window?.start === 'string' ? body.delivery_window.start : '18:00'
+    const end = typeof body.delivery_window?.end === 'string' ? body.delivery_window.end : '23:00'
+    return { start, end }
+  } catch {
+    return { start: '18:00', end: '23:00' }
+  }
+}
+
 export default function BroadcastsPage() {
   const [items, setItems] = useState<BroadcastApi[]>([])
   const [tags, setTags] = useState<Tag[]>([])
@@ -99,6 +111,10 @@ export default function BroadcastsPage() {
   const [tagId, setTagId] = useState('')
   const [deliveryMode, setDeliveryMode] = useState<'draft' | 'schedule'>('draft')
   const [scheduledAt, setScheduledAt] = useState('')
+  const [dailyLimit, setDailyLimit] = useState('200')
+  const [autoAppendRecipients, setAutoAppendRecipients] = useState(false)
+  const [deliveryStart, setDeliveryStart] = useState('18:00')
+  const [deliveryEnd, setDeliveryEnd] = useState('23:00')
   const [audienceCount, setAudienceCount] = useState<number | null>(null)
 
   const [resultsFor, setResultsFor] = useState<number | null>(null)
@@ -149,6 +165,10 @@ export default function BroadcastsPage() {
     setTagId('')
     setDeliveryMode('draft')
     setScheduledAt('')
+    setDailyLimit('200')
+    setAutoAppendRecipients(false)
+    setDeliveryStart('18:00')
+    setDeliveryEnd('23:00')
   }
 
   const beginEdit = (item: BroadcastApi) => {
@@ -163,6 +183,11 @@ export default function BroadcastsPage() {
     setTagId(selectedTag)
     setDeliveryMode(item.scheduledAt ? 'schedule' : 'draft')
     setScheduledAt(toDatetimeLocal(item.scheduledAt))
+    setDailyLimit(item.dailyLimit == null ? '' : String(item.dailyLimit))
+    setAutoAppendRecipients(item.autoAppendRecipients)
+    const deliveryWindow = readDeliveryWindow(item)
+    setDeliveryStart(deliveryWindow.start)
+    setDeliveryEnd(deliveryWindow.end)
     setError('')
     setNotice('')
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -176,6 +201,14 @@ export default function BroadcastsPage() {
       kind: 'rich',
       sourceRichMessageId: messageMode === 'template' ? selectedTemplateId || null : null,
       blocks,
+      ...(autoAppendRecipients ? {
+        delivery_window: {
+          timezone: 'Asia/Tokyo',
+          start: deliveryStart,
+          end: deliveryEnd,
+          pauseForPriorityWork: true,
+        },
+      } : {}),
     })
   }
 
@@ -213,6 +246,16 @@ export default function BroadcastsPage() {
     if (deliveryMode === 'schedule' && new Date(scheduledAt).getTime() <= Date.now()) {
       setError('予約日時は現在より後にしてください'); return
     }
+    const parsedDailyLimit = dailyLimit.trim() === '' ? null : Number(dailyLimit)
+    if (parsedDailyLimit !== null && (!Number.isInteger(parsedDailyLimit) || parsedDailyLimit < 1 || parsedDailyLimit > 50_000)) {
+      setError('1日の送信上限は1〜50000件で入力してください'); return
+    }
+    if (autoAppendRecipients && parsedDailyLimit === null) {
+      setError('新規対象者を自動追加する配信には1日の送信上限を設定してください'); return
+    }
+    if (autoAppendRecipients && deliveryStart >= deliveryEnd) {
+      setError('送信時間帯の終了時刻は開始時刻より後にしてください'); return
+    }
     setBusy(true)
     try {
       const input = {
@@ -221,6 +264,8 @@ export default function BroadcastsPage() {
         body: buildBody(),
         tagFilter: audienceMode === 'tag' ? JSON.stringify({ tagId }) : null,
         scheduledAt: deliveryMode === 'schedule' ? new Date(scheduledAt).toISOString() : null,
+        dailyLimit: parsedDailyLimit,
+        autoAppendRecipients,
       }
       if (editingId) await broadcastsApi.update(editingId, input)
       else await broadcastsApi.create(input)
@@ -247,14 +292,15 @@ export default function BroadcastsPage() {
       return
     }
     const countLabel = count == null ? '現在の対象者' : `${count}人の対象者`
-    if (!window.confirm(`「${item.name}」を${countLabel}へ今すぐ送信します。\n送信開始後は取り消せません。実行しますか？`)) return
+    const limitLabel = item.dailyLimit == null ? '' : `\n1日最大${item.dailyLimit}件で、残りは翌日以降に自動再開します。`
+    if (!window.confirm(`「${item.name}」を${countLabel}へ今すぐ送信します。${limitLabel}\n送信開始後は取り消せません。実行しますか？`)) return
     setBusy(true)
     setNotice('送信処理を開始しました。完了まで画面を閉じずにお待ちください。')
     try {
       const result = await broadcastsApi.send(item.id)
       setNotice(result.status === 'sent'
         ? `送信完了：成功 ${result.successCount}件 / 失敗 ${result.failureCount}件`
-        : `配信を開始しました。現在 成功 ${result.successCount}件 / 失敗 ${result.failureCount}件 / 対象 ${result.totalTarget}件です。残りは約2分30秒ごとに最大50件ずつ自動で再開します。`)
+        : `配信を開始しました。現在 成功 ${result.successCount}件 / 失敗 ${result.failureCount}件 / 対象 ${result.totalTarget}件です。${result.autoAppendRecipients ? '送信時間帯に1分1人で、新規の未送信者を末尾へ追加しながら継続します。' : '残りは小分けで自動的に再開します。'}${result.dailyLimit == null ? '' : ` 1日${result.dailyLimit}件に達したら翌日へ繰り越します。`}`)
       await load()
       if (result.failureCount > 0) await showResults(result.id, 'failed')
     } catch (err) {
@@ -274,6 +320,21 @@ export default function BroadcastsPage() {
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : '削除に失敗しました')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const stopRolling = async (item: BroadcastApi) => {
+    if (!window.confirm(`「${item.name}」への新規対象者追加と送信を停止します。送信履歴は保持されます。停止しますか？`)) return
+    setBusy(true)
+    setError('')
+    try {
+      await broadcastsApi.stop(item.id)
+      setNotice('継続配信を停止しました。送信済み履歴は保持されています。')
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '継続配信の停止に失敗しました')
     } finally {
       setBusy(false)
     }
@@ -371,7 +432,7 @@ export default function BroadcastsPage() {
           )}
         </div>
 
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
           <fieldset>
             <legend className="text-sm font-medium text-gray-700">送信対象</legend>
             <div className="mt-2 flex flex-wrap gap-4 text-sm">
@@ -386,6 +447,35 @@ export default function BroadcastsPage() {
             )}
             <p className="mt-2 text-xs text-gray-500">現在の対象人数：{audienceCount == null ? '未取得' : `${audienceCount}人`}</p>
             <p className="mt-1 text-xs text-gray-500">送信開始時点で、最近DM・コメントなどの反応があった人から優先して送信します。</p>
+          </fieldset>
+
+          <fieldset>
+            <legend className="text-sm font-medium text-gray-700">1日の送信上限</legend>
+            <input type="number" min="1" max="50000" step="1" value={dailyLimit} onChange={(e) => setDailyLimit(e.target.value)} placeholder="例：5000" className="mt-2 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm" />
+            <p className="mt-2 text-xs text-gray-500">上限到達後は停止し、翌日0時（日本時間）以降に未送信者だけへ自動再開します。空欄は日次上限なしです。</p>
+            <label className="mt-3 flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={autoAppendRecipients}
+                onChange={(e) => {
+                  setAutoAppendRecipients(e.target.checked)
+                  if (e.target.checked && dailyLimit.trim() === '') setDailyLimit('200')
+                }}
+                className="mt-0.5"
+              />
+              <span>新しく登録された未送信者を毎日リスト末尾へ追加する</span>
+            </label>
+            {autoAppendRecipients && (
+              <div className="mt-3">
+                <p className="text-xs font-medium text-gray-700">送信時間帯（日本時間）</p>
+                <div className="mt-1 flex items-center gap-2">
+                  <input type="time" value={deliveryStart} onChange={(e) => setDeliveryStart(e.target.value)} className="min-w-0 rounded-lg border border-gray-300 px-2 py-2 text-sm" />
+                  <span className="text-gray-400">〜</span>
+                  <input type="time" value={deliveryEnd} onChange={(e) => setDeliveryEnd(e.target.value)} className="min-w-0 rounded-lg border border-gray-300 px-2 py-2 text-sm" />
+                </div>
+                <p className="mt-1 text-xs text-gray-500">1分に1人ずつ送信し、送信済みの人には同じ配信を再送しません。</p>
+              </div>
+            )}
           </fieldset>
 
           <fieldset>
@@ -409,20 +499,21 @@ export default function BroadcastsPage() {
         {loading ? <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">読み込み中…</div> : items.length === 0 ? <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">一斉配信はまだありません</div> : (
           <div className="space-y-3">
             {items.map((item) => {
-              const badge = STATUS[item.status] ?? STATUS.draft
+              const badge = item.dailyPaused ? STATUS.daily_paused : (STATUS[item.status] ?? STATUS.draft)
               const hasFailures = item.failureCount > 0 || Boolean(item.lastError)
               return (
                 <article key={item.id} className="rounded-xl border border-gray-200 bg-white p-4">
                   <div className="flex flex-col justify-between gap-3 md:flex-row md:items-start">
                     <div>
                       <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{item.name}</h3><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.classes}`}>{badge.label}</span>{hasFailures && <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">要確認</span>}</div>
-                      <p className="mt-1 text-xs text-gray-500">{item.messageType === 'text' ? '文章' : item.messageType === 'image' ? '画像' : 'DMテンプレート'} · {parseTagId(item.tagFilter) ? 'タグ指定' : '全対象者'}{item.scheduledAt ? ` · 予約 ${new Date(item.scheduledAt).toLocaleString('ja-JP')}` : ''}</p>
-                      {(item.status === 'sending' || item.status === 'sent') && <p className="mt-2 text-sm"><span className="text-green-700">成功 {item.successCount}件</span><span className="mx-2 text-gray-300">/</span><span className={item.failureCount ? 'text-red-700' : 'text-gray-500'}>失敗 {item.failureCount}件</span><span className="mx-2 text-gray-300">/</span>対象 {item.totalTarget}件{item.status === 'sending' ? '（約2分30秒ごとに最大50件ずつ継続）' : ''}</p>}
+                      <p className="mt-1 text-xs text-gray-500">{item.messageType === 'text' ? '文章' : item.messageType === 'image' ? '画像' : 'DMテンプレート'} · {parseTagId(item.tagFilter) ? 'タグ指定' : '全対象者'}{item.scheduledAt ? ` · 予約 ${new Date(item.scheduledAt).toLocaleString('ja-JP')}` : ''}{item.dailyLimit == null ? '' : ` · 1日上限 ${item.dailyLimit}件`}{item.autoAppendRecipients ? ' · 新規対象者を自動追加' : ''}</p>
+                      {(item.status === 'sending' || item.status === 'sent') && <p className="mt-2 text-sm"><span className="text-green-700">成功 {item.successCount}件</span><span className="mx-2 text-gray-300">/</span><span className={item.failureCount ? 'text-red-700' : 'text-gray-500'}>失敗 {item.failureCount}件</span><span className="mx-2 text-gray-300">/</span>対象 {item.totalTarget}件{item.dailyLimit == null ? '' : ` / 本日 ${item.sentToday}件`}{item.status === 'sending' ? item.dailyPaused ? '（翌日0時以降に未送信者へ自動再開）' : item.autoAppendRecipients ? '（送信時間帯に1分1人で継続）' : '（約2分30秒ごとに継続）' : ''}</p>}
                       {item.lastError && <p className="mt-2 rounded bg-red-50 px-3 py-2 text-xs text-red-700">{item.lastError}</p>}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {(item.status === 'draft' || item.status === 'scheduled') && <button disabled={busy} onClick={() => beginEdit(item)} className="rounded-lg border border-gray-300 px-3 py-2 text-xs">編集</button>}
                       {(item.status === 'draft' || item.status === 'scheduled') && <button disabled={busy} onClick={() => void sendNow(item)} className="rounded-lg px-3 py-2 text-xs font-medium text-white disabled:opacity-50" style={{ backgroundColor: ACCENT }}>今すぐ送信</button>}
+                      {item.status === 'sending' && item.autoAppendRecipients && <button disabled={busy} onClick={() => void stopRolling(item)} className="rounded-lg border border-red-300 px-3 py-2 text-xs text-red-700 disabled:opacity-50">継続配信を停止</button>}
                       {item.status === 'sent' && <button onClick={() => void showResults(item.id)} className="rounded-lg border border-gray-300 px-3 py-2 text-xs">配信結果</button>}
                       {item.failureCount > 0 && <button onClick={() => void showResults(item.id, 'failed')} className="rounded-lg border border-red-300 px-3 py-2 text-xs text-red-700">失敗理由</button>}
                       {item.status !== 'sending' && <button disabled={busy} onClick={() => void remove(item)} className="rounded-lg px-3 py-2 text-xs text-gray-500 hover:bg-gray-100">削除</button>}

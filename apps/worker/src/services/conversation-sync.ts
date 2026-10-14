@@ -14,11 +14,14 @@ export interface ConversationSyncResult {
 interface ConversationBackfillState {
   cursor: string | null;
   done: boolean;
+  completedAt: string | null;
   conversationsScanned: number;
   added: number;
   updated: number;
   skipped: number;
 }
+
+const CONVERSATION_RESCAN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Import one Conversations API page into the account-scoped followers table.
@@ -88,9 +91,10 @@ export async function syncConversationPage(
 }
 
 /**
- * One-time automatic backfill driven by the existing five-minute cron. It
- * processes one page per tick and persists the cursor immediately. Large
- * inboxes therefore cannot lose all progress to a Worker execution timeout.
+ * Automatic backfill driven by the existing five-minute cron. It processes
+ * one page per tick and persists the cursor immediately. A completed inbox is
+ * scanned again weekly so contacts missed by a webhook or added after the
+ * initial import are eventually reconciled without a manual admin action.
  * The cursor is account-scoped and persisted in integration_settings.
  */
 async function runConversationBackfill(
@@ -106,6 +110,7 @@ async function runConversationBackfill(
   let state: ConversationBackfillState = {
     cursor: null,
     done: false,
+    completedAt: null,
     conversationsScanned: 0,
     added: 0,
     updated: 0,
@@ -115,7 +120,22 @@ async function runConversationBackfill(
     try { state = { ...state, ...JSON.parse(stored.value) as Partial<ConversationBackfillState> }; }
     catch { /* restart a corrupt cursor safely from the first page */ }
   }
-  if (state.done) return state;
+  if (state.done) {
+    const completedAtMs = state.completedAt ? Date.parse(state.completedAt) : Number.NaN;
+    const completedRecently =
+      Number.isFinite(completedAtMs) && Date.now() - completedAtMs < CONVERSATION_RESCAN_INTERVAL_MS;
+    if (completedRecently) return state;
+
+    state = {
+      cursor: null,
+      done: false,
+      completedAt: null,
+      conversationsScanned: 0,
+      added: 0,
+      updated: 0,
+      skipped: 0,
+    };
+  }
 
   for (let pageIndex = 0; pageIndex < 1; pageIndex++) {
     const result = await syncConversationPage(db, igClient, account, state.cursor ?? undefined);
@@ -131,6 +151,7 @@ async function runConversationBackfill(
     state.skipped += result.skipped;
     state.cursor = result.nextCursor;
     state.done = !result.hasMore;
+    if (state.done) state.completedAt = new Date().toISOString();
     if (state.done) break;
   }
 

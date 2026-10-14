@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { describeBroadcastFailure, isBroadcastBatchMinute, sendIgMessage } from '../broadcast.js';
+import {
+  describeBroadcastFailure,
+  isBroadcastBatchMinute,
+  isPostingPriorityWindow,
+  isWithinBroadcastDeliveryWindow,
+  sendIgMessage,
+} from '../broadcast.js';
 
 describe('isBroadcastBatchMinute', () => {
   it.each([0, 2, 5, 7, 10, 12, 55, 57])('runs at minute %i', (minute) => {
@@ -8,6 +14,43 @@ describe('isBroadcastBatchMinute', () => {
 
   it.each([1, 3, 4, 6, 8, 9, 58, 59])('waits at minute %i', (minute) => {
     expect(isBroadcastBatchMinute(new Date(Date.UTC(2026, 8, 5, 9, minute)))).toBe(false);
+  });
+});
+
+describe('isPostingPriorityWindow', () => {
+  it('pauses bulk delivery for the posting and campaign recovery window', () => {
+    expect(isPostingPriorityWindow(new Date('2026-10-04T08:59:00Z'))).toBe(false);
+    expect(isPostingPriorityWindow(new Date('2026-10-04T09:00:00Z'))).toBe(true);
+    expect(isPostingPriorityWindow(new Date('2026-10-04T10:39:00Z'))).toBe(true);
+    expect(isPostingPriorityWindow(new Date('2026-10-04T10:40:00Z'))).toBe(false);
+  });
+
+  it('pauses bulk delivery while the nightly insight sync runs', () => {
+    expect(isPostingPriorityWindow(new Date('2026-10-04T14:24:00Z'))).toBe(false);
+    expect(isPostingPriorityWindow(new Date('2026-10-04T14:25:00Z'))).toBe(true);
+    expect(isPostingPriorityWindow(new Date('2026-10-04T14:49:00Z'))).toBe(true);
+    expect(isPostingPriorityWindow(new Date('2026-10-04T14:50:00Z'))).toBe(false);
+  });
+});
+
+describe('isWithinBroadcastDeliveryWindow', () => {
+  const body = JSON.stringify({
+    text: 'hello',
+    delivery_window: {
+      start: '18:30',
+      end: '21:00',
+      dates: ['2026-10-03', '2026-10-04'],
+    },
+  });
+
+  it('allows the requested JST dates and time window', () => {
+    expect(isWithinBroadcastDeliveryWindow({ body }, new Date('2026-10-03T09:30:00Z'))).toBe(true);
+    expect(isWithinBroadcastDeliveryWindow({ body }, new Date('2026-10-03T11:59:00Z'))).toBe(true);
+  });
+
+  it('blocks the end boundary and dates outside the allow-list', () => {
+    expect(isWithinBroadcastDeliveryWindow({ body }, new Date('2026-10-03T12:00:00Z'))).toBe(false);
+    expect(isWithinBroadcastDeliveryWindow({ body }, new Date('2026-10-05T09:30:00Z'))).toBe(false);
   });
 });
 

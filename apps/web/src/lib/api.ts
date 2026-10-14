@@ -743,6 +743,10 @@ export interface BroadcastApi {
   totalTarget: number
   successCount: number
   failureCount: number
+  dailyLimit: number | null
+  autoAppendRecipients: boolean
+  sentToday: number
+  dailyPaused: boolean
   lastError: string | null
   createdAt: string
   updatedAt: string
@@ -766,6 +770,8 @@ export interface BroadcastWriteInput {
   body: string
   tagFilter: string | null
   scheduledAt: string | null
+  dailyLimit: number | null
+  autoAppendRecipients: boolean
 }
 
 export const broadcastsApi = {
@@ -797,6 +803,13 @@ export const broadcastsApi = {
       method: 'POST',
     })
     if (!res.data) throw new Error(res.error || '一斉配信の送信に失敗しました')
+    return res.data
+  },
+  stop: async (id: number): Promise<BroadcastApi> => {
+    const res = await fetchApi<ApiResponse<BroadcastApi>>(`/api/broadcasts/${id}/stop`, {
+      method: 'POST',
+    })
+    if (!res.data) throw new Error(res.error || '継続配信の停止に失敗しました')
     return res.data
   },
   deliveries: async (

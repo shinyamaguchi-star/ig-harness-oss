@@ -110,7 +110,7 @@ export default function DashboardPage() {
       {/* Summary cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
         <StatCard
-          title="フォロワー数"
+          title="取得済みユーザー数"
           value={stats.followerCount}
           loading={loading}
           href="/followers"
@@ -178,8 +178,8 @@ export default function DashboardPage() {
               </svg>
             </div>
             <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-pink-700 transition-colors">フォロワー管理</p>
-              <p className="text-xs text-gray-400">フォロワー一覧・タグ管理</p>
+              <p className="text-sm font-medium text-gray-900 group-hover:text-pink-700 transition-colors">接触ユーザー管理</p>
+              <p className="text-xs text-gray-400">DM・コメント等で取得したユーザーとタグの管理</p>
             </div>
           </Link>
 

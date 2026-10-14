@@ -103,4 +103,73 @@ describe('syncConversationPage', () => {
     expect(writes[0]?.[0]).toBe('conversation_backfill_v1:account-A');
     expect(JSON.parse(String(writes[0]?.[1]))).toMatchObject({ done: true, added: 1 });
   });
+
+  it('keeps a recently completed weekly scan idle', async () => {
+    const stored = JSON.stringify({
+      cursor: null,
+      done: true,
+      completedAt: new Date().toISOString(),
+      conversationsScanned: 50,
+      added: 10,
+      updated: 40,
+      skipped: 0,
+    });
+    const db = {
+      prepare: vi.fn((sql: string) => ({
+        bind: (..._values: unknown[]) => ({
+          first: async () => sql.startsWith('SELECT value') ? { value: stored } : null,
+          run: async () => ({ success: true }),
+        }),
+      })),
+    };
+    const client = { getConversations: vi.fn() };
+
+    const result = await processConversationBackfill(
+      db as unknown as D1Database,
+      client as never,
+      { id: 'account-A', ig_user_id: 'business-ig' },
+    );
+
+    expect(result).toMatchObject({ done: true, conversationsScanned: 50 });
+    expect(client.getConversations).not.toHaveBeenCalled();
+  });
+
+  it('restarts a completed scan when its weekly refresh is due', async () => {
+    const writes: unknown[][] = [];
+    const stored = JSON.stringify({
+      cursor: null,
+      done: true,
+      completedAt: '2026-01-01T00:00:00.000Z',
+      conversationsScanned: 50,
+      added: 10,
+      updated: 40,
+      skipped: 0,
+    });
+    const db = {
+      prepare: vi.fn((sql: string) => ({
+        bind: (...values: unknown[]) => ({
+          first: async () => sql.startsWith('SELECT value') ? { value: stored } : null,
+          run: async () => { writes.push(values); return { success: true }; },
+        }),
+      })),
+    };
+    const client = {
+      getConversations: vi.fn().mockResolvedValue({
+        data: [{ id: 'c-new', participants: { data: [{ id: 'new-user' }] } }],
+      }),
+    };
+    dbMocks.getFriendByIgsid.mockResolvedValue(null);
+    dbMocks.upsertFriend.mockResolvedValue({ id: 1 });
+
+    const result = await processConversationBackfill(
+      db as unknown as D1Database,
+      client as never,
+      { id: 'account-A', ig_user_id: 'business-ig' },
+    );
+
+    expect(client.getConversations).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ done: true, conversationsScanned: 1, added: 1 });
+    expect(result.completedAt).toEqual(expect.any(String));
+    expect(JSON.parse(String(writes[0]?.[1]))).toMatchObject({ done: true, conversationsScanned: 1 });
+  });
 });

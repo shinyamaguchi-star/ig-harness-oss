@@ -15,6 +15,12 @@ export interface Broadcast {
   total_target: number;
   success_count: number;
   failure_count: number;
+  daily_limit: number | null;
+  auto_append_recipients: number;
+  audience_cursor_follower_id: number;
+  backoff_until: string | null;
+  /** Delivery attempts made during the current Asia/Tokyo calendar day. */
+  sent_today: number;
   last_error: string | null;
   account_id: string | null;
   created_at: string;
@@ -28,11 +34,17 @@ export async function getBroadcasts(
   const conditions: string[] = [];
   const binds: unknown[] = [];
   if (opts.accountId) {
-    conditions.push('account_id = ?');
+    conditions.push('b.account_id = ?');
     binds.push(opts.accountId);
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const stmt = db.prepare(`SELECT * FROM broadcasts ${where} ORDER BY created_at DESC`);
+  const stmt = db.prepare(
+    `SELECT b.*,
+            (SELECT COUNT(*) FROM broadcast_deliveries d
+             WHERE d.broadcast_id = b.id
+               AND date(d.attempted_at, '+9 hours') = date('now', '+9 hours')) AS sent_today
+     FROM broadcasts b ${where} ORDER BY b.created_at DESC`,
+  );
   const result = binds.length > 0
     ? await stmt.bind(...binds).all<Broadcast>()
     : await stmt.all<Broadcast>();
@@ -44,7 +56,13 @@ export async function getBroadcastById(
   id: number | string,
 ): Promise<Broadcast | null> {
   return db
-    .prepare(`SELECT * FROM broadcasts WHERE id = ?`)
+    .prepare(
+      `SELECT b.*,
+              (SELECT COUNT(*) FROM broadcast_deliveries d
+               WHERE d.broadcast_id = b.id
+                 AND date(d.attempted_at, '+9 hours') = date('now', '+9 hours')) AS sent_today
+       FROM broadcasts b WHERE b.id = ?`,
+    )
     .bind(id)
     .first<Broadcast>();
 }
@@ -55,6 +73,8 @@ export interface CreateBroadcastInput {
   body: string;
   tagFilter?: string | null;
   scheduledAt?: string | null;
+  dailyLimit?: number | null;
+  autoAppendRecipients?: boolean;
   /** Owning IG business account (ig_accounts.id). */
   accountId?: string;
 }
@@ -69,8 +89,9 @@ export async function createBroadcast(
   const result = await db
     .prepare(
       `INSERT INTO broadcasts
-         (name, message_type, body, tag_filter, status, scheduled_at, sent_at, total_sent, account_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)
+         (name, message_type, body, tag_filter, status, scheduled_at, sent_at, total_sent, daily_limit,
+          auto_append_recipients, account_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?)
        RETURNING *`,
     )
     .bind(
@@ -80,13 +101,15 @@ export async function createBroadcast(
       input.tagFilter ?? null,
       initialStatus,
       input.scheduledAt ?? null,
+      input.dailyLimit ?? null,
+      input.autoAppendRecipients ? 1 : 0,
       input.accountId ?? null,
       now,
       now,
     )
     .first<Broadcast>();
 
-  return result!;
+  return { ...result!, sent_today: 0 };
 }
 
 export type UpdateBroadcastInput = Partial<
@@ -98,6 +121,8 @@ export type UpdateBroadcastInput = Partial<
     | 'tag_filter'
     | 'status'
     | 'scheduled_at'
+    | 'daily_limit'
+    | 'auto_append_recipients'
   >
 >;
 
@@ -132,6 +157,14 @@ export async function updateBroadcast(
   if (updates.scheduled_at !== undefined) {
     fields.push('scheduled_at = ?');
     values.push(updates.scheduled_at);
+  }
+  if (updates.daily_limit !== undefined) {
+    fields.push('daily_limit = ?');
+    values.push(updates.daily_limit);
+  }
+  if (updates.auto_append_recipients !== undefined) {
+    fields.push('auto_append_recipients = ?');
+    values.push(updates.auto_append_recipients ? 1 : 0);
   }
 
   if (fields.length > 0) {
@@ -200,6 +233,22 @@ export async function updateBroadcastStatus(
     .run();
 }
 
+export async function setBroadcastBackoff(
+  db: D1Database,
+  id: number | string,
+  until: string,
+  reason: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE broadcasts
+       SET backoff_until = ?, last_error = ?, updated_at = ?
+       WHERE id = ? AND status = 'sending'`,
+    )
+    .bind(until, reason, jstNow(), id)
+    .run();
+}
+
 export type BroadcastDeliveryStatus = 'success' | 'failed';
 
 export interface BroadcastDelivery {
@@ -241,7 +290,10 @@ export async function clearBroadcastQueue(
   db: D1Database,
   broadcastId: number | string,
 ): Promise<void> {
-  await db.prepare('DELETE FROM broadcast_queue WHERE broadcast_id = ?').bind(broadcastId).run();
+  await db.batch([
+    db.prepare('DELETE FROM broadcast_queue WHERE broadcast_id = ?').bind(broadcastId),
+    db.prepare('UPDATE broadcasts SET audience_cursor_follower_id = 0 WHERE id = ?').bind(broadcastId),
+  ]);
 }
 
 /**
@@ -251,13 +303,21 @@ export async function clearBroadcastQueue(
  */
 export async function initializeBroadcastQueue(
   db: D1Database,
-  input: { broadcastId: number | string; accountId: string | null; tagId?: string },
+  input: {
+    broadcastId: number | string;
+    accountId: string | null;
+    tagId?: string;
+    appendNewRecipients?: boolean;
+    audienceCursorFollowerId?: number;
+  },
 ): Promise<number> {
   const existing = await db
     .prepare('SELECT COUNT(*) AS count FROM broadcast_queue WHERE broadcast_id = ?')
     .bind(input.broadcastId)
     .first<{ count: number }>();
-  if (Number(existing?.count ?? 0) > 0) return Number(existing!.count);
+  if (Number(existing?.count ?? 0) > 0 && !input.appendNewRecipients) {
+    return Number(existing!.count);
+  }
 
   await db
     .prepare(
@@ -274,9 +334,11 @@ export async function initializeBroadcastQueue(
   const tagJoin = input.tagId
     ? 'INNER JOIN follower_tags ft ON ft.follower_id = f.id AND ft.tag_id = ?'
     : '';
+  const cursor = input.appendNewRecipients ? Number(input.audienceCursorFollowerId ?? 0) : 0;
   const binds: unknown[] = [input.broadcastId];
   if (input.tagId) binds.push(input.tagId);
   if (input.accountId) binds.push(input.accountId);
+  binds.push(cursor);
   await db
     .prepare(
       `INSERT OR IGNORE INTO broadcast_queue
@@ -301,6 +363,7 @@ export async function initializeBroadcastQueue(
          GROUP BY follower_id
        ) recent_activity ON recent_activity.follower_id = f.id
        WHERE ${accountCondition}
+         AND f.id > ?
        -- Queue ids determine batch order. People with the latest observed
        -- interaction are inserted first; people without history follow.
        ORDER BY recent_activity.last_activity_at DESC NULLS LAST,
@@ -309,6 +372,30 @@ export async function initializeBroadcastQueue(
     )
     .bind(...binds)
     .run();
+
+  if (input.appendNewRecipients) {
+    const maxBinds: unknown[] = [];
+    if (input.tagId) maxBinds.push(input.tagId);
+    if (input.accountId) maxBinds.push(input.accountId);
+    const maxRow = await db
+      .prepare(
+        `SELECT COALESCE(MAX(f.id), 0) AS max_id
+         FROM followers f
+         ${tagJoin}
+         WHERE ${accountCondition}`,
+      )
+      .bind(...maxBinds)
+      .first<{ max_id: number }>();
+    const nextCursor = Math.max(cursor, Number(maxRow?.max_id ?? 0));
+    await db
+      .prepare(
+        `UPDATE broadcasts
+         SET audience_cursor_follower_id = MAX(audience_cursor_follower_id, ?)
+         WHERE id = ?`,
+      )
+      .bind(nextCursor, input.broadcastId)
+      .run();
+  }
 
   const total = await db
     .prepare('SELECT COUNT(*) AS count FROM broadcast_queue WHERE broadcast_id = ?')
@@ -350,13 +437,14 @@ export async function getPendingBroadcastQueue(
   broadcastId: number | string,
   limit = 50,
 ): Promise<BroadcastQueueItem[]> {
+  if (limit <= 0) return [];
   const result = await db
     .prepare(
       `SELECT * FROM broadcast_queue
        WHERE broadcast_id = ? AND status = 'pending'
        ORDER BY id ASC LIMIT ?`,
     )
-    .bind(broadcastId, Math.min(Math.max(limit, 1), 50))
+    .bind(broadcastId, Math.min(limit, 50))
     .all<BroadcastQueueItem>();
   return result.results;
 }
@@ -369,11 +457,41 @@ export async function claimBroadcastQueueItem(
     .prepare(
       `UPDATE broadcast_queue
        SET status = 'processing', claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now'))
-       WHERE id = ? AND status = 'pending'`,
+       WHERE id = ? AND status = 'pending'
+         AND (
+           (SELECT daily_limit FROM broadcasts WHERE id = broadcast_queue.broadcast_id) IS NULL
+           OR (
+             (SELECT COUNT(*) FROM broadcast_deliveries d
+              WHERE d.broadcast_id = broadcast_queue.broadcast_id
+                AND date(d.attempted_at, '+9 hours') = date('now', '+9 hours'))
+             +
+             (SELECT COUNT(*) FROM broadcast_queue q
+              WHERE q.broadcast_id = broadcast_queue.broadcast_id
+                AND q.status = 'processing'
+                AND date(q.claimed_at, '+9 hours') = date('now', '+9 hours'))
+           ) < (SELECT daily_limit FROM broadcasts WHERE id = broadcast_queue.broadcast_id)
+         )`,
     )
     .bind(id)
     .run();
   return Number(result.meta.changes ?? 0) === 1;
+}
+
+/** Return a claimed queue item to pending when it could not be handed to the
+ * external work queue. No Instagram request has been made at this point, so
+ * retrying it cannot create a duplicate DM. */
+export async function releaseBroadcastQueueItem(
+  db: D1Database,
+  id: number | string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE broadcast_queue
+       SET status = 'pending', claimed_at = NULL
+       WHERE id = ? AND status = 'processing'`,
+    )
+    .bind(id)
+    .run();
 }
 
 export async function completeBroadcastQueueItem(
@@ -440,6 +558,24 @@ export async function getBroadcastQueueCounts(
     success: Number(row?.success ?? 0),
     failed: Number(row?.failed ?? 0),
   };
+}
+
+/** Number of recipients attempted today in Asia/Tokyo. Both successes and
+ * failures consume the cap because both call Meta's Send API. */
+export async function getBroadcastAttemptsToday(
+  db: D1Database,
+  broadcastId: number | string,
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM broadcast_deliveries
+       WHERE broadcast_id = ?
+         AND date(attempted_at, '+9 hours') = date('now', '+9 hours')`,
+    )
+    .bind(broadcastId)
+    .first<{ count: number }>();
+  return Number(row?.count ?? 0);
 }
 
 export async function recordBroadcastDelivery(

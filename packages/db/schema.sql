@@ -125,6 +125,11 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   total_target INTEGER NOT NULL DEFAULT 0,
   success_count INTEGER NOT NULL DEFAULT 0,
   failure_count INTEGER NOT NULL DEFAULT 0,
+  daily_limit INTEGER CHECK(daily_limit IS NULL OR daily_limit > 0),
+  auto_append_recipients INTEGER NOT NULL DEFAULT 0
+    CHECK(auto_append_recipients IN (0, 1)),
+  audience_cursor_follower_id INTEGER NOT NULL DEFAULT 0,
+  backoff_until TEXT,
   last_error TEXT,
   account_id TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', datetime('now'))),

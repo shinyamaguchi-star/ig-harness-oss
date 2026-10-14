@@ -7,6 +7,8 @@ import {
   deleteBroadcast,
   getIgAccountById,
   getBroadcastDeliveries,
+  getBroadcastQueueCounts,
+  updateBroadcastStatus,
   clearBroadcastDeliveries,
   clearBroadcastQueue,
 } from '@ig-harness/db';
@@ -61,6 +63,7 @@ function validateBroadcastBody(messageType: BroadcastMessageType, rawBody: strin
 }
 
 function serializeBroadcast(row: DbBroadcast) {
+  const dailyPaused = row.status === 'sending' && row.daily_limit !== null && row.sent_today >= row.daily_limit;
   return {
     id: row.id,
     name: row.name,
@@ -74,6 +77,10 @@ function serializeBroadcast(row: DbBroadcast) {
     totalTarget: row.total_target,
     successCount: row.success_count,
     failureCount: row.failure_count,
+    dailyLimit: row.daily_limit,
+    autoAppendRecipients: row.auto_append_recipients === 1,
+    sentToday: row.sent_today,
+    dailyPaused,
     lastError: row.last_error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -187,6 +194,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
       body: string;
       tagFilter?: string | null;
       scheduledAt?: string | null;
+      dailyLimit?: number | null;
+      autoAppendRecipients?: boolean;
     }>();
 
     if (!reqBody.name || !reqBody.messageType || !reqBody.body) {
@@ -197,6 +206,13 @@ broadcasts.post('/api/broadcasts', async (c) => {
     }
     const bodyError = validateBroadcastBody(reqBody.messageType, reqBody.body);
     if (bodyError) return c.json({ success: false, error: bodyError }, 400);
+    if (reqBody.dailyLimit !== undefined && reqBody.dailyLimit !== null &&
+        (!Number.isInteger(reqBody.dailyLimit) || reqBody.dailyLimit < 1 || reqBody.dailyLimit > 50_000)) {
+      return c.json({ success: false, error: '1日の送信上限は1〜50000件で入力してください' }, 400);
+    }
+    if (reqBody.autoAppendRecipients === true && reqBody.dailyLimit == null) {
+      return c.json({ success: false, error: '新規対象者を自動追加する配信には1日の送信上限が必要です' }, 400);
+    }
 
     const broadcast = await createBroadcast(c.env.DB, {
       name: reqBody.name,
@@ -204,6 +220,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
       body: reqBody.body,
       tagFilter: reqBody.tagFilter ?? null,
       scheduledAt: reqBody.scheduledAt ?? null,
+      dailyLimit: reqBody.dailyLimit ?? null,
+      autoAppendRecipients: reqBody.autoAppendRecipients === true,
       accountId: account.id,
     });
 
@@ -234,12 +252,23 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       body?: string;
       tagFilter?: string | null;
       scheduledAt?: string | null;
+      dailyLimit?: number | null;
+      autoAppendRecipients?: boolean;
     }>();
 
     const effectiveType = reqBody.messageType ?? existing.message_type;
     const effectiveBody = reqBody.body ?? existing.body;
     const bodyError = validateBroadcastBody(effectiveType, effectiveBody);
     if (bodyError) return c.json({ success: false, error: bodyError }, 400);
+    if (reqBody.dailyLimit !== undefined && reqBody.dailyLimit !== null &&
+        (!Number.isInteger(reqBody.dailyLimit) || reqBody.dailyLimit < 1 || reqBody.dailyLimit > 50_000)) {
+      return c.json({ success: false, error: '1日の送信上限は1〜50000件で入力してください' }, 400);
+    }
+    const effectiveAutoAppend = reqBody.autoAppendRecipients ?? (existing.auto_append_recipients === 1);
+    const effectiveDailyLimit = reqBody.dailyLimit === undefined ? existing.daily_limit : reqBody.dailyLimit;
+    if (effectiveAutoAppend && effectiveDailyLimit == null) {
+      return c.json({ success: false, error: '新規対象者を自動追加する配信には1日の送信上限が必要です' }, 400);
+    }
 
     // Keep status in sync with scheduledAt changes
     let statusUpdate: 'draft' | 'scheduled' | undefined;
@@ -253,6 +282,10 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       body: reqBody.body,
       tag_filter: reqBody.tagFilter,
       scheduled_at: reqBody.scheduledAt,
+      daily_limit: reqBody.dailyLimit,
+      auto_append_recipients: reqBody.autoAppendRecipients === undefined
+        ? undefined
+        : reqBody.autoAppendRecipients ? 1 : 0,
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
     });
 
@@ -276,6 +309,32 @@ broadcasts.delete('/api/broadcasts/:id', async (c) => {
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/broadcasts/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/broadcasts/:id/stop - stop an ongoing rolling broadcast without
+// deleting its recipient history. This preserves the no-resend guarantee.
+broadcasts.post('/api/broadcasts/:id/stop', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const { broadcast } = await getOwnedBroadcast(c, id);
+    if (!broadcast) return c.json({ success: false, error: 'Broadcast not found' }, 404);
+    if (broadcast.status !== 'sending' || broadcast.auto_append_recipients !== 1) {
+      return c.json({ success: false, error: 'Only an active rolling broadcast can be stopped' }, 400);
+    }
+    const counts = await getBroadcastQueueCounts(c.env.DB, id);
+    await updateBroadcastStatus(c.env.DB, id, 'sent', {
+      totalSent: counts.success,
+      totalTarget: counts.total,
+      successCount: counts.success,
+      failureCount: counts.failed,
+      lastError: null,
+    });
+    const updated = await getBroadcastById(c.env.DB, id);
+    return c.json({ success: true, data: updated ? serializeBroadcast(updated) : null });
+  } catch (err) {
+    console.error('POST /api/broadcasts/:id/stop error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

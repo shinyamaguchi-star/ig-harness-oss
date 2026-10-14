@@ -30,7 +30,7 @@ function FollowerDetailModal({ follower, onClose }: FollowerDetailModalProps) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <h2 className="text-base font-semibold text-gray-900">フォロワー詳細</h2>
+          <h2 className="text-base font-semibold text-gray-900">接触ユーザー詳細</h2>
           <button
             onClick={onClose}
             className="min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg hover:bg-gray-100 transition-colors"
@@ -137,7 +137,7 @@ export default function FollowersPage() {
         setError(res.error || 'エラーが発生しました')
       }
     } catch {
-      setError('フォロワーの読み込みに失敗しました')
+      setError('接触ユーザーの読み込みに失敗しました')
     } finally {
       setLoading(false)
     }
@@ -197,8 +197,8 @@ export default function FollowersPage() {
   return (
     <div>
       <Header
-        title="フォロワー"
-        description="Instagramフォロワーの管理"
+        title="接触ユーザー"
+        description="DM・コメントなどを通じてInstagram APIから取得できたユーザーの管理"
         action={
           <button
             type="button"
@@ -215,6 +215,10 @@ export default function FollowersPage() {
       {syncNotice && (
         <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">{syncNotice}</div>
       )}
+
+      <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+        ここに表示されるのは、DM・コメントなどで接触しInstagram APIから取得できたユーザーです。Instagramの全フォロワー一覧ではありません。過去DMは毎週自動で再走査されます。
+      </div>
 
       {/* Filters */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 mb-4">
@@ -276,7 +280,7 @@ export default function FollowersPage() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
               d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
-          <p className="text-gray-500 text-sm">フォロワーが見つかりません</p>
+          <p className="text-gray-500 text-sm">取得済みの接触ユーザーが見つかりません</p>
         </div>
       ) : (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">

@@ -1,8 +1,13 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { listIgAccounts, updateIgAccount } from '@ig-harness/db';
+import type { InstagramClient } from '@ig-harness/ig-sdk';
 import { processStepDeliveries } from './services/step-delivery.js';
-import { processScheduledBroadcasts } from './services/broadcast.js';
+import {
+  processBroadcastWorkItem,
+  processScheduledBroadcasts,
+  type BroadcastWorkItem,
+} from './services/broadcast.js';
 import { processFollowupDrip } from './services/engagement-gate.js';
 import { authMiddleware } from './middleware/auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
@@ -40,6 +45,7 @@ export type Env = {
   Bindings: {
     DB: D1Database;
     IMAGES: R2Bucket;
+    BROADCAST_QUEUE?: Queue<BroadcastWorkItem>;
     // ASSETS is optional: create-ig-harness deploys without an [assets] binding,
     // so callers MUST guard `env.ASSETS` before invoking `.fetch` (see notFound below).
     ASSETS?: Fetcher;
@@ -434,7 +440,13 @@ async function scheduled(
     // Lower priority: bulk sends may be slow, but can no longer block today's
     // scheduled post or its campaign activation.
     try {
-      await processScheduledBroadcasts(env.DB, igClient, env.WORKER_URL, account.id);
+      await processScheduledBroadcasts(
+        env.DB,
+        igClient,
+        env.WORKER_URL,
+        account.id,
+        env.BROADCAST_QUEUE,
+      );
     } catch (err) {
       console.error(`[cron] processScheduledBroadcasts failed for account=${account.id}:`, err);
     }
@@ -462,4 +474,29 @@ async function scheduled(
 export default {
   fetch: app.fetch,
   scheduled,
+  async queue(batch: MessageBatch<BroadcastWorkItem>, env: Env['Bindings']): Promise<void> {
+    const accounts = await listIgAccounts(env.DB, { activeOnly: true });
+    const accountById = new Map(accounts.map((account) => [account.id, account]));
+    const clientByAccount = new Map<string, Promise<InstagramClient>>();
+    for (const message of batch.messages) {
+      const work = message.body;
+      try {
+        const account = accountById.get(work.accountId);
+        if (!account) throw new Error(`Broadcast account ${work.accountId} not found`);
+        let clientPromise = clientByAccount.get(work.accountId);
+        if (!clientPromise) {
+          clientPromise = getAccountClient(env, env.DB, account);
+          clientByAccount.set(work.accountId, clientPromise);
+        }
+        const client = await clientPromise;
+        await processBroadcastWorkItem(env.DB, client, work, message.attempts);
+        message.ack();
+      } catch (err) {
+        console.error(`[queue] broadcast recipient failed id=${work.queueItemId}:`, err);
+        const retryDelaysSeconds = [120, 300, 600, 1_200, 1_800, 3_600];
+        const delaySeconds = retryDelaysSeconds[Math.min(Math.max(message.attempts - 1, 0), retryDelaysSeconds.length - 1)]!;
+        message.retry({ delaySeconds });
+      }
+    }
+  },
 };

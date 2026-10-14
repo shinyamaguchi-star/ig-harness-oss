@@ -30,6 +30,13 @@ export async function deployWorker(
   const deployTomlPath = join(workerDir, deployTomlName);
 
   s.start("Worker デプロイ中...");
+  const broadcastQueueName = `${options.workerName}-broadcasts`;
+  const broadcastDlqName = `${options.workerName}-broadcasts-dlq`;
+  // Queue creation is idempotent from the operator's perspective. Wrangler
+  // returns an error when it already exists, which is safe to ignore here.
+  await wrangler(["queues", "create", broadcastQueueName], { cwd: workerDir }).catch(() => {});
+  await wrangler(["queues", "create", broadcastDlqName], { cwd: workerDir }).catch(() => {});
+
   const deployToml = `name = "${options.workerName}"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
@@ -44,6 +51,18 @@ database_id = "${options.d1DatabaseId}"
 [[r2_buckets]]
 binding = "IMAGES"
 bucket_name = "${options.r2BucketName}"
+
+[[queues.producers]]
+binding = "BROADCAST_QUEUE"
+queue = "${broadcastQueueName}"
+
+[[queues.consumers]]
+queue = "${broadcastQueueName}"
+max_batch_size = 5
+max_batch_timeout = 5
+max_retries = 8
+max_concurrency = 4
+dead_letter_queue = "${broadcastDlqName}"
 
 [triggers]
 crons = ["* * * * *"]

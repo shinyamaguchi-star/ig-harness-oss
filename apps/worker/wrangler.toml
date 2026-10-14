@@ -18,6 +18,19 @@ database_id = "YOUR_D1_DATABASE_ID"
 binding = "IMAGES"
 bucket_name = "YOUR_R2_BUCKET"
 
+# Production deploys replace these placeholders with per-account queue names.
+[[queues.producers]]
+binding = "BROADCAST_QUEUE"
+queue = "YOUR_WORKER_NAME-broadcasts"
+
+[[queues.consumers]]
+queue = "YOUR_WORKER_NAME-broadcasts"
+max_batch_size = 5
+max_batch_timeout = 5
+max_retries = 8
+max_concurrency = 4
+dead_letter_queue = "YOUR_WORKER_NAME-broadcasts-dlq"
+
 [triggers]
 # One trigger stays within Cloudflare's free cron quota. The worker runs
 # priority tasks each minute and gates broadcasts to minutes 0/2/5/7/... .
