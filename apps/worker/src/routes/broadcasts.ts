@@ -207,11 +207,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
     const bodyError = validateBroadcastBody(reqBody.messageType, reqBody.body);
     if (bodyError) return c.json({ success: false, error: bodyError }, 400);
     if (reqBody.dailyLimit !== undefined && reqBody.dailyLimit !== null &&
-        (!Number.isInteger(reqBody.dailyLimit) || reqBody.dailyLimit < 1 || reqBody.dailyLimit > 200)) {
-      return c.json({ success: false, error: '1日の送信上限は1〜200件で入力してください' }, 400);
-    }
-    if (reqBody.autoAppendRecipients === true && reqBody.dailyLimit == null) {
-      return c.json({ success: false, error: '新規対象者を自動追加する配信には1日の送信上限が必要です' }, 400);
+        (!Number.isInteger(reqBody.dailyLimit) || reqBody.dailyLimit < 1 || reqBody.dailyLimit > 50_000)) {
+      return c.json({ success: false, error: '1日の送信上限は1〜50000件で入力してください' }, 400);
     }
 
     const broadcast = await createBroadcast(c.env.DB, {
@@ -220,7 +217,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
       body: reqBody.body,
       tagFilter: reqBody.tagFilter ?? null,
       scheduledAt: reqBody.scheduledAt ?? null,
-      dailyLimit: reqBody.dailyLimit ?? 200,
+      dailyLimit: reqBody.dailyLimit ?? null,
       autoAppendRecipients: reqBody.autoAppendRecipients === true,
       accountId: account.id,
     });
@@ -261,15 +258,9 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
     const bodyError = validateBroadcastBody(effectiveType, effectiveBody);
     if (bodyError) return c.json({ success: false, error: bodyError }, 400);
     if (reqBody.dailyLimit !== undefined && reqBody.dailyLimit !== null &&
-        (!Number.isInteger(reqBody.dailyLimit) || reqBody.dailyLimit < 1 || reqBody.dailyLimit > 200)) {
-      return c.json({ success: false, error: '1日の送信上限は1〜200件で入力してください' }, 400);
+        (!Number.isInteger(reqBody.dailyLimit) || reqBody.dailyLimit < 1 || reqBody.dailyLimit > 50_000)) {
+      return c.json({ success: false, error: '1日の送信上限は1〜50000件で入力してください' }, 400);
     }
-    const effectiveAutoAppend = reqBody.autoAppendRecipients ?? (existing.auto_append_recipients === 1);
-    const effectiveDailyLimit = reqBody.dailyLimit === undefined ? existing.daily_limit : reqBody.dailyLimit;
-    if (effectiveAutoAppend && effectiveDailyLimit == null) {
-      return c.json({ success: false, error: '新規対象者を自動追加する配信には1日の送信上限が必要です' }, 400);
-    }
-
     // Keep status in sync with scheduledAt changes
     let statusUpdate: 'draft' | 'scheduled' | undefined;
     if (reqBody.scheduledAt !== undefined) {

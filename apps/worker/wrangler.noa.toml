@@ -1,0 +1,30 @@
+name = "ig-harness-b312b0e4"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+workers_dev = true
+account_id = "e99e38cea8cdafa6ad75b955745a9c9a"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ig-harness-b312b0e4"
+database_id = "85419669-e060-4179-9ea1-d297be7b7209"
+migrations_dir = "../../packages/db/migrations"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "ig-harness-b312b0e4-images"
+
+[[queues.producers]]
+binding = "BROADCAST_QUEUE"
+queue = "ig-harness-b312b0e4-broadcasts"
+
+[[queues.consumers]]
+queue = "ig-harness-b312b0e4-broadcasts"
+max_batch_size = 5
+max_batch_timeout = 5
+max_retries = 8
+max_concurrency = 4
+dead_letter_queue = "ig-harness-b312b0e4-broadcasts-dlq"
+
+[triggers]
+crons = ["* * * * *"]

@@ -84,11 +84,11 @@ function parseTagId(filter: string | null): string {
 function readDeliveryWindow(item: BroadcastApi): { start: string; end: string } {
   try {
     const body = JSON.parse(item.body) as { delivery_window?: { start?: unknown; end?: unknown } }
-    const start = typeof body.delivery_window?.start === 'string' ? body.delivery_window.start : '18:00'
+    const start = typeof body.delivery_window?.start === 'string' ? body.delivery_window.start : '19:00'
     const end = typeof body.delivery_window?.end === 'string' ? body.delivery_window.end : '23:00'
     return { start, end }
   } catch {
-    return { start: '18:00', end: '23:00' }
+    return { start: '19:00', end: '23:00' }
   }
 }
 
@@ -111,9 +111,9 @@ export default function BroadcastsPage() {
   const [tagId, setTagId] = useState('')
   const [deliveryMode, setDeliveryMode] = useState<'draft' | 'schedule'>('draft')
   const [scheduledAt, setScheduledAt] = useState('')
-  const [dailyLimit, setDailyLimit] = useState('200')
+  const [dailyLimit, setDailyLimit] = useState('')
   const [autoAppendRecipients, setAutoAppendRecipients] = useState(false)
-  const [deliveryStart, setDeliveryStart] = useState('18:00')
+  const [deliveryStart, setDeliveryStart] = useState('19:00')
   const [deliveryEnd, setDeliveryEnd] = useState('23:00')
   const [audienceCount, setAudienceCount] = useState<number | null>(null)
 
@@ -165,9 +165,9 @@ export default function BroadcastsPage() {
     setTagId('')
     setDeliveryMode('draft')
     setScheduledAt('')
-    setDailyLimit('200')
+    setDailyLimit('')
     setAutoAppendRecipients(false)
-    setDeliveryStart('18:00')
+    setDeliveryStart('19:00')
     setDeliveryEnd('23:00')
   }
 
@@ -250,9 +250,6 @@ export default function BroadcastsPage() {
     if (parsedDailyLimit !== null && (!Number.isInteger(parsedDailyLimit) || parsedDailyLimit < 1 || parsedDailyLimit > 50_000)) {
       setError('1日の送信上限は1〜50000件で入力してください'); return
     }
-    if (autoAppendRecipients && parsedDailyLimit === null) {
-      setError('新規対象者を自動追加する配信には1日の送信上限を設定してください'); return
-    }
     if (autoAppendRecipients && deliveryStart >= deliveryEnd) {
       setError('送信時間帯の終了時刻は開始時刻より後にしてください'); return
     }
@@ -300,7 +297,7 @@ export default function BroadcastsPage() {
       const result = await broadcastsApi.send(item.id)
       setNotice(result.status === 'sent'
         ? `送信完了：成功 ${result.successCount}件 / 失敗 ${result.failureCount}件`
-        : `配信を開始しました。現在 成功 ${result.successCount}件 / 失敗 ${result.failureCount}件 / 対象 ${result.totalTarget}件です。${result.autoAppendRecipients ? '送信時間帯に1分1人で、新規の未送信者を末尾へ追加しながら継続します。' : '残りは小分けで自動的に再開します。'}${result.dailyLimit == null ? '' : ` 1日${result.dailyLimit}件に達したら翌日へ繰り越します。`}`)
+        : `配信を開始しました。現在 成功 ${result.successCount}件 / 失敗 ${result.failureCount}件 / 対象 ${result.totalTarget}件です。${result.autoAppendRecipients ? '投稿とキャンペーンの完了後から23時まで1分1人で送り、未送信者は翌日に自動再開します。' : '残りは小分けで自動的に再開します。'}${result.dailyLimit == null ? '' : ` 1日${result.dailyLimit}件に達したら翌日へ繰り越します。`}`)
       await load()
       if (result.failureCount > 0) await showResults(result.id, 'failed')
     } catch (err) {
@@ -459,7 +456,6 @@ export default function BroadcastsPage() {
                 checked={autoAppendRecipients}
                 onChange={(e) => {
                   setAutoAppendRecipients(e.target.checked)
-                  if (e.target.checked && dailyLimit.trim() === '') setDailyLimit('200')
                 }}
                 className="mt-0.5"
               />
@@ -473,7 +469,7 @@ export default function BroadcastsPage() {
                   <span className="text-gray-400">〜</span>
                   <input type="time" value={deliveryEnd} onChange={(e) => setDeliveryEnd(e.target.value)} className="min-w-0 rounded-lg border border-gray-300 px-2 py-2 text-sm" />
                 </div>
-                <p className="mt-1 text-xs text-gray-500">1分に1人ずつ送信し、送信済みの人には同じ配信を再送しません。</p>
+                <p className="mt-1 text-xs text-gray-500">投稿とキャンペーンの完了後から23時まで1分に1人ずつ送信します。23時に止まり、未送信者は翌日の投稿完了後に再開します。同じ配信の送信済み相手には再送しません。</p>
               </div>
             )}
           </fieldset>

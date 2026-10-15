@@ -11,7 +11,6 @@ const mocks = vi.hoisted(() => ({
   completeBroadcastQueueItem: vi.fn(),
   getBroadcastQueueCounts: vi.fn(),
   getBroadcastAttemptsToday: vi.fn(),
-  getAccountBroadcastAttemptsToday: vi.fn(),
   setBroadcastBackoff: vi.fn(),
   recordDmFailure: vi.fn(),
 }));
@@ -69,7 +68,6 @@ describe('resumable broadcasts', () => {
     mocks.completeBroadcastQueueItem.mockResolvedValue(undefined);
     mocks.updateBroadcastStatus.mockResolvedValue(undefined);
     mocks.getBroadcastAttemptsToday.mockResolvedValue(0);
-    mocks.getAccountBroadcastAttemptsToday.mockResolvedValue(0);
     mocks.recordDmFailure.mockResolvedValue(undefined);
   });
 
@@ -155,23 +153,27 @@ describe('resumable broadcasts', () => {
     );
   });
 
-  it('shares the 200-recipient daily cap across broadcasts for one account', async () => {
+  it('does not impose a fixed account-wide daily cap', async () => {
     mocks.getBroadcastById.mockResolvedValue({ ...broadcast, daily_limit: null });
-    mocks.getAccountBroadcastAttemptsToday.mockResolvedValue(200);
-    mocks.getPendingBroadcastQueue.mockResolvedValue([]);
+    mocks.getPendingBroadcastQueue.mockResolvedValue([queueItem(1)]);
     mocks.getBroadcastQueueCounts.mockResolvedValue({
-      total: 120, pending: 120, processing: 0, success: 0, failed: 0,
+      total: 120, pending: 119, processing: 0, success: 1, failed: 0,
     });
+    const sendText = vi.fn().mockResolvedValue({});
+    const db = {
+      prepare: () => ({ bind: () => ({ run: vi.fn().mockResolvedValue(undefined) }) }),
+    } as unknown as D1Database;
 
-    await processBroadcastSend({} as D1Database, {} as never, 7, undefined, 'account-1');
+    await processBroadcastSend(db, { sendText } as never, 7, undefined, 'account-1');
 
-    expect(mocks.getPendingBroadcastQueue).toHaveBeenCalledWith({} as D1Database, 7, 0);
+    expect(mocks.getPendingBroadcastQueue).toHaveBeenCalledWith(db, 7, 10);
+    expect(sendText).toHaveBeenCalledTimes(1);
   });
 
   it('drip-feeds one recipient and keeps a rolling broadcast active when caught up', async () => {
     mocks.getBroadcastById.mockResolvedValue({
       ...broadcast,
-      daily_limit: 200,
+      daily_limit: null,
       auto_append_recipients: 1,
       audience_cursor_follower_id: 42,
     });

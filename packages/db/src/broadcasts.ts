@@ -452,7 +452,7 @@ export async function getPendingBroadcastQueue(
 export async function claimBroadcastQueueItem(
   db: D1Database,
   id: number | string,
-  accountDailyLimit = 200,
+  accountDailyLimit: number | null = null,
 ): Promise<boolean> {
   const result = await db
     .prepare(
@@ -480,7 +480,7 @@ export async function claimBroadcastQueueItem(
             )
               AND q.status = 'processing'
               AND date(q.claimed_at, '+9 hours') = date('now', '+9 hours'))
-         ) < ?
+         ) < COALESCE(?, 9223372036854775807)
          AND (
            (SELECT daily_limit FROM broadcasts WHERE id = broadcast_queue.broadcast_id) IS NULL
            OR (

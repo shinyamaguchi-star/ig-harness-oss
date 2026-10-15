@@ -9,7 +9,6 @@ import {
   completeBroadcastQueueItem,
   getBroadcastQueueCounts,
   getBroadcastAttemptsToday,
-  getAccountBroadcastAttemptsToday,
   releaseBroadcastQueueItem,
   setBroadcastBackoff,
 } from '@ig-harness/db';
@@ -27,13 +26,9 @@ const PRIORITY_ACTIVITY_LOOKBACK_MS = 90 * 1000;
 // four hours, while retaining headroom for the cron invocation's D1 work.
 const QUEUE_DISPATCH_SIZE = 40;
 // Rolling broadcasts are intentionally drip-fed one recipient per cron tick.
-// This avoids the old pattern of releasing dozens of sends at once while still
-// allowing 200 recipients during a five-hour delivery window.
+// The delivery window, rather than a fixed daily count, determines how many
+// recipients are attempted before the remaining queue resumes the next day.
 const CONTINUOUS_DISPATCH_SIZE = 1;
-// Cost and anti-spam guard shared by every broadcast owned by one Instagram
-// account. Multiple broadcasts cannot each consume another 200 recipients.
-export const ACCOUNT_DAILY_BROADCAST_LIMIT = 200;
-
 export interface BroadcastWorkItem {
   broadcastId: number | string;
   queueItemId: number;
@@ -94,9 +89,20 @@ export function isWithinBroadcastDeliveryWindow(
 
 async function hasRecentPriorityActivity(db: D1Database, accountId: string): Promise<boolean> {
   const cutoff = new Date(Date.now() - PRIORITY_ACTIVITY_LOOKBACK_MS).toISOString();
+  const now = new Date().toISOString();
   const row = await db
     .prepare(
       `SELECT (
+         EXISTS(
+           SELECT 1 FROM media_posts
+           WHERE account_id = ?
+             AND (
+               (status = 'scheduled' AND scheduled_at <= ?)
+               OR status = 'processing'
+               OR (status = 'published' AND campaign_auto_activate = 1
+                   AND COALESCE(campaign_activation_status, 'pending') <> 'active')
+             )
+         ) OR
          EXISTS(
            SELECT 1 FROM media_posts
            WHERE account_id = ? AND updated_at >= ?
@@ -115,7 +121,7 @@ async function hasRecentPriorityActivity(db: D1Database, accountId: string): Pro
          )
        ) AS busy`,
     )
-    .bind(accountId, cutoff, accountId, cutoff, accountId, cutoff)
+    .bind(accountId, now, accountId, cutoff, accountId, cutoff, accountId, cutoff)
     .first<{ busy: number }>();
   return row?.busy === 1;
 }
@@ -134,8 +140,9 @@ export function isBroadcastBatchMinute(date = new Date()): boolean {
   return minuteInFive === 0 || minuteInFive === 2;
 }
 
-/** Daily posting/campaign work has priority around 19:00 JST. Bulk delivery
- * is held until the 19:30 recovery pass has had time to finish. */
+/** Do not start bulk delivery before the scheduled 19:00 posting pass. After
+ * 19:00 the per-account priority check keeps waiting until that account's post
+ * and campaign activation have actually completed. */
 export function isPostingPriorityWindow(date = new Date()): boolean {
   const time = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Tokyo',
@@ -143,7 +150,7 @@ export function isPostingPriorityWindow(date = new Date()): boolean {
     minute: '2-digit',
     hourCycle: 'h23',
   }).format(date);
-  return (time >= '18:00' && time < '19:40') ||
+  return (time >= '18:00' && time < '19:00') ||
     (time >= '23:25' && time < '23:50');
 }
 
@@ -204,24 +211,20 @@ export async function enqueueBroadcastWork(
   const attemptedToday = broadcast.daily_limit === null
     ? 0
     : await getBroadcastAttemptsToday(db, broadcastId);
-  const accountAttemptedToday = broadcast.account_id
-    ? await getAccountBroadcastAttemptsToday(db, broadcast.account_id)
-    : attemptedToday;
   const dispatchSize = broadcast.auto_append_recipients === 1
     ? CONTINUOUS_DISPATCH_SIZE
     : QUEUE_DISPATCH_SIZE;
   const remainingToday = broadcast.daily_limit === null
     ? dispatchSize
     : Math.max(0, broadcast.daily_limit - attemptedToday);
-  const accountRemainingToday = Math.max(0, ACCOUNT_DAILY_BROADCAST_LIMIT - accountAttemptedToday);
   const pending = await getPendingBroadcastQueue(
     db,
     broadcastId,
-    Math.min(dispatchSize, remainingToday, accountRemainingToday),
+    Math.min(dispatchSize, remainingToday),
   );
   const claimed = [] as typeof pending;
   for (const item of pending) {
-    if (await claimBroadcastQueueItem(db, item.id, ACCOUNT_DAILY_BROADCAST_LIMIT)) claimed.push(item);
+    if (await claimBroadcastQueueItem(db, item.id, null)) claimed.push(item);
   }
   if (claimed.length > 0) {
     try {
@@ -375,23 +378,19 @@ export async function processBroadcastSend(
     const attemptedToday = broadcast.daily_limit === null
       ? 0
       : await getBroadcastAttemptsToday(db, broadcastId);
-    const accountAttemptedToday = broadcast.account_id
-      ? await getAccountBroadcastAttemptsToday(db, broadcast.account_id)
-      : attemptedToday;
     const dispatchSize = broadcast.auto_append_recipients === 1
       ? CONTINUOUS_DISPATCH_SIZE
       : BATCH_SIZE;
     const remainingToday = broadcast.daily_limit === null
       ? dispatchSize
       : Math.max(0, broadcast.daily_limit - attemptedToday);
-    const accountRemainingToday = Math.max(0, ACCOUNT_DAILY_BROADCAST_LIMIT - accountAttemptedToday);
     const batch = await getPendingBroadcastQueue(
       db,
       broadcastId,
-      Math.min(dispatchSize, remainingToday, accountRemainingToday),
+      Math.min(dispatchSize, remainingToday),
     );
     for (const recipient of batch) {
-      if (!(await claimBroadcastQueueItem(db, recipient.id, ACCOUNT_DAILY_BROADCAST_LIMIT))) continue;
+      if (!(await claimBroadcastQueueItem(db, recipient.id, null))) continue;
       try {
         await sendIgMessage(igClient, recipient.recipient_igsid, broadcast.message_type, messageBody);
         await completeBroadcastQueueItem(db, {

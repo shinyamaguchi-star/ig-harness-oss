@@ -18,11 +18,11 @@ describe('isBroadcastBatchMinute', () => {
 });
 
 describe('isPostingPriorityWindow', () => {
-  it('pauses bulk delivery for the posting and campaign recovery window', () => {
+  it('pauses bulk delivery until the scheduled posting pass begins', () => {
     expect(isPostingPriorityWindow(new Date('2026-10-04T08:59:00Z'))).toBe(false);
     expect(isPostingPriorityWindow(new Date('2026-10-04T09:00:00Z'))).toBe(true);
-    expect(isPostingPriorityWindow(new Date('2026-10-04T10:39:00Z'))).toBe(true);
-    expect(isPostingPriorityWindow(new Date('2026-10-04T10:40:00Z'))).toBe(false);
+    expect(isPostingPriorityWindow(new Date('2026-10-04T09:59:00Z'))).toBe(true);
+    expect(isPostingPriorityWindow(new Date('2026-10-04T10:00:00Z'))).toBe(false);
   });
 
   it('pauses bulk delivery while the nightly insight sync runs', () => {
@@ -51,6 +51,18 @@ describe('isWithinBroadcastDeliveryWindow', () => {
   it('blocks the end boundary and dates outside the allow-list', () => {
     expect(isWithinBroadcastDeliveryWindow({ body }, new Date('2026-10-03T12:00:00Z'))).toBe(false);
     expect(isWithinBroadcastDeliveryWindow({ body }, new Date('2026-10-05T09:30:00Z'))).toBe(false);
+  });
+
+  it('stops at 23:00 JST and opens the same window again the next day', () => {
+    const recurring = {
+      body: JSON.stringify({
+        text: 'hello',
+        delivery_window: { start: '19:00', end: '23:00', pauseForPriorityWork: true },
+      }),
+    };
+    expect(isWithinBroadcastDeliveryWindow(recurring, new Date('2026-10-15T13:59:00Z'))).toBe(true);
+    expect(isWithinBroadcastDeliveryWindow(recurring, new Date('2026-10-15T14:00:00Z'))).toBe(false);
+    expect(isWithinBroadcastDeliveryWindow(recurring, new Date('2026-10-16T10:00:00Z'))).toBe(true);
   });
 });
 
